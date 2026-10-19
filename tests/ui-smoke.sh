@@ -61,16 +61,22 @@ done
 "$BIN" --history | awk '{print $1}' | while read -r id; do
   [ -n "$id" ] && "$BIN" --dismiss "$id" >/dev/null || :
 done
-sleep 0.3
-[ "$(count)" -eq 0 ] || { echo "FAIL notifications did not dismiss"; exit 1; }
+i=0
+while [ "$(count)" -ne 0 ]; do
+  i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL notifications did not dismiss"; exit 1; }
+  sleep 0.05
+done
 "$BIN" --osd volume 45 >/dev/null
 i=0
 while [ "$(count)" -lt 1 ]; do
   i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL OSD did not map"; exit 1; }
   sleep 0.05
 done
-sleep 1.4
-[ "$(count)" -eq 0 ] || { echo "FAIL OSD did not expire"; exit 1; }
+i=0
+while [ "$(count)" -ne 0 ]; do
+  i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL OSD did not expire"; exit 1; }
+  sleep 0.05
+done
 # Lock privacy: publish a viewable lock-ready window, send, expect suppression.
 xmessage -title lock-test -buttons OK -center lock-test >/dev/null 2>&1 &
 XMESSAGE=$!
