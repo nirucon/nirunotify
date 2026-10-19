@@ -72,10 +72,10 @@ done
 sleep 1.4
 [ "$(count)" -eq 0 ] || { echo "FAIL OSD did not expire"; exit 1; }
 # Lock privacy: publish a viewable lock-ready window, send, expect suppression.
-xmessage -buttons OK -center lock-test >/dev/null 2>&1 &
+xmessage -title lock-test -buttons OK -center lock-test >/dev/null 2>&1 &
 XMESSAGE=$!
 sleep 0.3
-LOCKWIN=$(xdotool search --class Xmessage | head -1)
+LOCKWIN=$(xdotool search --name lock-test | head -1)
 [ -n "$LOCKWIN" ] || { echo "FAIL xmessage test window"; exit 1; }
 xprop -root -f _NIRU_LOCK_READY 32x -set _NIRU_LOCK_READY "$LOCKWIN"
 notify-send -a Private -t 6000 "Private summary" "must not display"
