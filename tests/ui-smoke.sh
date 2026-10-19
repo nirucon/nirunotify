@@ -77,6 +77,32 @@ while [ "$(count)" -ne 0 ]; do
   i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL OSD did not expire"; exit 1; }
   sleep 0.05
 done
+# ActionInvoked: a body click on a notification with a default action invokes it.
+dbus-monitor --session "type='signal',interface='org.freedesktop.Notifications',member='ActionInvoked'" >"$T/action.log" 2>&1 &
+MON=$!
+sleep 0.2
+notify-send --wait -a Action -A default=Open -t 6000 "Action test" "body" &
+CLIENT=$!
+i=0
+while [ "$(count)" -lt 1 ]; do
+  i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL action notification did not map"; exit 1; }
+  sleep 0.05
+done
+WIN=$(xdotool search --class NIRUNOTIFY | head -1)
+xdotool mousemove --window "$WIN" 10 10 click 1
+i=0
+while [ "$(count)" -ne 0 ]; do
+  i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL action did not close notification"; exit 1; }
+  sleep 0.05
+done
+i=0
+while kill -0 "$CLIENT" 2>/dev/null; do
+  i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL action client did not finish"; exit 1; }
+  sleep 0.05
+done
+kill "$MON" 2>/dev/null || :
+grep -q 'ActionInvoked' "$T/action.log" || { cat "$T/action.log"; echo "FAIL ActionInvoked signal"; exit 1; }
+grep -q 'default' "$T/action.log" || { cat "$T/action.log"; echo "FAIL action key"; exit 1; }
 # Lock privacy: publish a viewable lock-ready window, send, expect suppression.
 xmessage -title lock-test -buttons OK -center lock-test >/dev/null 2>&1 &
 XMESSAGE=$!

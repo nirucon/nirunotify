@@ -43,6 +43,7 @@ struct Notification {
     body: String,
     urgency: u8,
     timeout_ms: u64,
+    actions: Vec<(String, String)>,
 }
 
 #[derive(Clone)]
@@ -56,6 +57,7 @@ enum UiCommand {
 enum UiEvent {
     Closed { id: u32, reason: u32 },
     ClientClose(u32),
+    Action { id: u32, key: String },
 }
 
 struct Shared {
@@ -82,7 +84,7 @@ impl NotifyIface {
         _app_icon: &str,
         summary: &str,
         body: &str,
-        _actions: Vec<String>,
+        actions: Vec<String>,
         hints: HashMap<String, OwnedValue>,
         expire_timeout: i32,
     ) -> u32 {
@@ -91,6 +93,12 @@ impl NotifyIface {
             .and_then(|v| u8::try_from(v).ok())
             .unwrap_or(1)
             .min(2);
+        let actions: Vec<(String, String)> = actions
+            .chunks_exact(2)
+            .take(4)
+            .filter(|pair| !pair[0].is_empty())
+            .map(|pair| (truncate(&pair[0], 64), truncate(&pair[1], 80)))
+            .collect();
         let timeout_ms = if expire_timeout < 0 {
             None
         } else {
@@ -111,6 +119,7 @@ impl NotifyIface {
             body: truncate(body, 4000),
             urgency,
             timeout_ms: timeout_ms.unwrap_or(u64::MAX),
+            actions,
         };
         shared.notifications.insert(id, notification.clone());
         shared.history.push_back(notification.clone());
@@ -141,7 +150,7 @@ impl NotifyIface {
     }
 
     fn get_capabilities(&self) -> Vec<String> {
-        vec!["body".into()]
+        vec!["body".into(), "actions".into()]
     }
 
     fn get_server_information(&self) -> (String, String, String, String) {
@@ -200,6 +209,23 @@ fn router(
                     BUS_NAME,
                     "NotificationClosed",
                     &(id, 3u32),
+                );
+            }
+            UiEvent::Action { id, key } => {
+                shared.lock().unwrap().notifications.remove(&id);
+                let _ = connection.emit_signal(
+                    None::<&str>,
+                    OBJECT_PATH,
+                    BUS_NAME,
+                    "ActionInvoked",
+                    &(id, key.as_str()),
+                );
+                let _ = connection.emit_signal(
+                    None::<&str>,
+                    OBJECT_PATH,
+                    BUS_NAME,
+                    "NotificationClosed",
+                    &(id, 2u32),
                 );
             }
         }
@@ -368,6 +394,9 @@ struct Popup {
     expires: Instant,
     notification: Option<Notification>,
     text: String,
+    actions: Vec<(String, String)>,
+    /// Action key and its clickable rectangle inside the popup.
+    hitboxes: Vec<(String, i16, i16, u16, u16)>,
 }
 
 impl Popup {
@@ -442,13 +471,23 @@ impl Ui {
             .is_some_and(|a| a.map_state == MapState::VIEWABLE)
     }
 
-    fn create_popup(&self, id: Option<u32>, text: &str, colour: u32) -> Result<Popup> {
+    fn create_popup(
+        &self,
+        id: Option<u32>,
+        text: &str,
+        colour: u32,
+        actions: &[(String, String)],
+    ) -> Result<Popup> {
         let padding = 12i16;
         let max_chars = ((self.cfg.width as i16 - padding * 2) / 8).max(12) as usize;
         let lines = wrap(text, max_chars, 8);
         let line_h = 20u16;
         let app_h = if id.is_some() { line_h } else { 0 };
-        let height = (padding as u16 * 2 + line_h + lines.len() as u16 * line_h + app_h)
+        let height = (padding as u16 * 2
+            + line_h
+            + lines.len() as u16 * line_h
+            + app_h
+            + actions.len() as u16 * line_h)
             .min(self.height_limit.saturating_sub(20))
             .max(40);
         let win = self.c.generate_id()?;
@@ -520,6 +559,8 @@ impl Ui {
             expires: Instant::now() + timeout,
             notification: None,
             text: text.to_string(),
+            actions: actions.to_vec(),
+            hitboxes: Vec::new(),
         })
     }
 
@@ -607,6 +648,36 @@ impl Ui {
                 pal.surface,
             )?;
         }
+        p.hitboxes.clear();
+        let action_count = p.actions.len();
+        for (index, (key, label)) in p.actions.iter().enumerate() {
+            baseline += 20;
+            let text = format!("[ {label} ]");
+            p.renderer.line(
+                &self.c,
+                gc,
+                padding + 6,
+                baseline,
+                &text,
+                if key == "default" {
+                    pal.accent
+                } else {
+                    pal.foreground
+                },
+                pal.surface,
+            )?;
+            let top = baseline - p.renderer.line_height + 2;
+            p.hitboxes.push((
+                key.clone(),
+                padding + 4,
+                top,
+                self.cfg.width.saturating_sub((padding * 2 + 4) as u16),
+                20,
+            ));
+            if index + 1 == action_count {
+                break;
+            }
+        }
         p.renderer.present(&self.c, gc, win, self.cfg.width)?;
         self.c.flush()?;
         Ok(())
@@ -662,7 +733,13 @@ impl Ui {
             old.destroy(&self.c);
         }
         let text = format!("{}\n{}", notification.summary, notification.body);
-        let mut popup = self.create_popup(Some(notification.id), &text, self.cfg.palette.accent)?;
+        let actions = notification.actions.clone();
+        let mut popup = self.create_popup(
+            Some(notification.id),
+            &text,
+            self.cfg.palette.accent,
+            &actions,
+        )?;
         popup.notification = Some(notification);
         popup.expires = Instant::now() + Duration::from_millis(timeout);
         self.popups.insert(0, popup);
@@ -681,7 +758,7 @@ impl Ui {
         if let Some(old) = self.osd.take() {
             old.destroy(&self.c);
         }
-        let mut popup = self.create_popup(None, text, self.cfg.palette.accent)?;
+        let mut popup = self.create_popup(None, text, self.cfg.palette.accent, &[])?;
         popup.text = text.to_string();
         // OSD is a single centred box, not part of the stack.
         let x = self.origin_x + (self.width_limit as i16 - self.cfg.width as i16) / 2;
@@ -712,6 +789,19 @@ impl Ui {
         popup
             .renderer
             .present(&self.c, popup.gc, popup.win, self.cfg.width)?;
+        Ok(())
+    }
+
+    fn activate_command(&mut self, id: u32, key: &str) -> Result<()> {
+        if let Some(index) = self.popups.iter().position(|p| p.id == Some(id)) {
+            let popup = self.popups.remove(index);
+            popup.destroy(&self.c);
+            self.layout()?;
+        }
+        let _ = self.events.send(UiEvent::Action {
+            id,
+            key: key.to_string(),
+        });
         Ok(())
     }
 
@@ -784,8 +874,30 @@ impl Ui {
                 match event {
                     Event::ButtonPress(e) => {
                         if let Some(index) = self.popups.iter().position(|p| p.win == e.event) {
+                            let key = self.popups[index]
+                                .hitboxes
+                                .iter()
+                                .find(|(_, x, y, w, h)| {
+                                    e.event_x >= *x
+                                        && e.event_y >= *y
+                                        && e.event_x < x.saturating_add(*w as i16)
+                                        && e.event_y < y.saturating_add(*h as i16)
+                                })
+                                .map(|(key, _, _, _, _)| key.clone())
+                                .or_else(|| {
+                                    self.popups[index].notification.as_ref().and_then(|n| {
+                                        n.actions
+                                            .iter()
+                                            .find(|(key, _)| key == "default")
+                                            .map(|(key, _)| key.clone())
+                                    })
+                                });
                             let id = self.popups[index].id.unwrap_or(0);
-                            self.close(id, 2, true)?;
+                            if let Some(key) = key {
+                                self.activate_command(id, &key)?;
+                            } else {
+                                self.close(id, 2, true)?;
+                            }
                         } else if self.osd.as_ref().is_some_and(|p| p.win == e.event) {
                             if let Some(p) = self.osd.take() {
                                 p.destroy(&self.c);

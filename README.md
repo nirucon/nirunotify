@@ -3,11 +3,12 @@
 Native notification service and hardware OSD for the NIRU X11 desktop.
 **A personal project for the author's own machines; others are welcome to try it.**
 
-Status: **0.2.1**, an early native provider. NIRUX still defaults to Dunst; select
+Status: **0.3.0**, an early native provider. NIRUX still defaults to Dunst; select
 NIRUNOTIFY explicitly after verifying it on your session.
 
 - Implements `org.freedesktop.Notifications` with replacement IDs, timeouts,
-  close reasons, urgency accents, bounded text and memory-only history.
+  close reasons, urgency accents, clickable actions/`ActionInvoked`, bounded text
+  and memory-only history.
 - Native themed surfaces; ordinary notifications never take keyboard focus.
 - Selects the pointer monitor, RandR primary or a named output; per-theme
   position/width and a configurable critical timeout/DND policy.
@@ -16,7 +17,7 @@ NIRUNOTIFY explicitly after verifying it on your session.
 - Coalesced hardware OSD: `nirunotify --osd volume 45`.
 - Bounded live/replacement maps, 100-entry history and a 100-command lock queue;
   `CloseNotification` emits exactly one close reason.
-- No markup or image support; `body` is the advertised capability.
+- No markup or image support; `body` and `actions` are the advertised capabilities.
 
 ## Install
 
