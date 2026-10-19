@@ -1,15 +1,46 @@
 # NIRUNOTIFY
 
-A planned native notification service styled for the NIRU X11 desktop.
+Native notification service and hardware OSD for the NIRU X11 desktop.
 **A personal project for the author's own machines; others are welcome to try it.**
 
-Status: design checkpoint, not yet an installable program or Dunst replacement.
-No binary release is published; nirux retains Dunst until acceptance tests pass.
+Status: **0.1.0**, an early native provider. NIRUX still defaults to Dunst; select
+NIRUNOTIFY explicitly after verifying it on your session.
 
-The intended service implements `org.freedesktop.Notifications`, with configurable
-placement, appearance, expiry, DND and bounded history. Planned config location:
-`~/.config/nirunotify/config.toml`.
+- Implements `org.freedesktop.Notifications` with replacement IDs, timeouts,
+  close reasons, urgency accents, bounded text and memory-only history.
+- Native themed surfaces; ordinary notifications never take keyboard focus.
+- Suppresses and queues content while `_NIRU_LOCK_READY` names a live lock window.
+- DND and history controls through a documented Unix socket CLI.
+- Coalesced hardware OSD: `nirunotify --osd volume 45`.
+- No markup or image support; `body` is the advertised capability.
 
-Implementation contract: [DESIGN.md](DESIGN.md).
-Authoritative tasks, dependencies and release gates:
-[NIRU roadmap, R6](https://github.com/nirucon/nirux/blob/main/ROADMAP.md).
+## Install
+
+```sh
+./install.sh
+./install.sh --build
+```
+
+Requires a session D-Bus and X11. Settings:
+`~/.config/nirunotify/config.toml` (see `config.example.toml`).
+
+## Use
+
+```sh
+nirunotify                 # run the service (one bus owner)
+notify-send "Hello" "Body" # ordinary client
+nirunotify --dnd on|off|toggle|status
+nirunotify --history
+nirunotify --dismiss ID
+nirunotify --clear
+nirunotify --osd volume 45
+nirunotify --check-config
+```
+
+The service exits with a clear error if another notification daemon owns
+`org.freedesktop.Notifications`; it never evicts an existing provider.
+
+Design contract: [DESIGN.md](DESIGN.md) · Roadmap:
+[nirux R6](https://github.com/nirucon/nirux/blob/main/ROADMAP.md).
+
+MIT. Copyright 2026 Nicklas Rudolfsson.

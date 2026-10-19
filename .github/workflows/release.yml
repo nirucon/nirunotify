@@ -1,0 +1,44 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Install musl and test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools dbus-x11 xvfb xdotool x11-utils libnotify-bin
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - name: Verify release identity and static binary
+        run: |
+          test "$(./target/x86_64-unknown-linux-musl/release/nirunotify --version | awk '{print $2}')" = "${GITHUB_REF_NAME#v}"
+          file target/x86_64-unknown-linux-musl/release/nirunotify
+          if ldd target/x86_64-unknown-linux-musl/release/nirunotify 2>&1 | grep -q '=>'; then
+            echo "::error::nirunotify is dynamically linked"
+            exit 1
+          fi
+          sh tests/ui-smoke.sh target/x86_64-unknown-linux-musl/release/nirunotify
+      - name: Collect assets
+        run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-musl/release/nirunotify dist/
+          cd dist && sha256sum nirunotify > SHA256SUMS && cat SHA256SUMS
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          make_latest: true
+          files: |
+            dist/nirunotify
+            dist/SHA256SUMS
+          generate_release_notes: true

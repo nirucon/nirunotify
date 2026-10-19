@@ -1,0 +1,22 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - name: D-Bus and X11 smoke test
+        run: |
+          sudo apt-get update && sudo apt-get install -y dbus-x11 xvfb xdotool x11-utils libnotify-bin
+          cargo build --release --locked
+          sh tests/ui-smoke.sh target/release/nirunotify
+      - name: Shellcheck
+        run: |
+          docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable \
+            -S warning -s sh /src/install.sh /src/tests/ui-smoke.sh

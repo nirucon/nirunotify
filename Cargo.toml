@@ -1,0 +1,16 @@
+[package]
+name = "nirunotify"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+description = "Native NIRU notification service"
+
+[dependencies]
+x11rb = { version = "0.13", features = ["randr"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+ab_glyph = "0.2"
+libc = "0.2"
+indexmap = "=2.7.1"
+zbus = { version = "4.4.0", default-features = false, features = ["async-io", "blocking"] }

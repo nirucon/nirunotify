@@ -1,0 +1,17 @@
+# NIRUNOTIFY settings.
+# Location: ~/.config/nirunotify/config.toml (or $XDG_CONFIG_HOME/nirunotify/)
+
+# Width of each notification surface, in pixels.
+width = 360
+# Gap from the screen edge and between stacked notifications.
+margin = 12
+# Maximum visible notifications. Older ones stay in memory history.
+max_visible = 5
+# Server-side default when a client sends -1.
+default_timeout_ms = 6000
+# Upper bound for any timeout, including a client's persistent 0.
+max_timeout_ms = 60000
+# font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+font_size = 14.0
+# top-right, top-left, bottom-right or bottom-left.
+position = "top-right"
