@@ -75,8 +75,13 @@ sleep 1.4
 xmessage -title lock-test -buttons OK -center lock-test >/dev/null 2>&1 &
 XMESSAGE=$!
 sleep 0.3
-LOCKWIN=$(xdotool search --name lock-test | head -1)
-[ -n "$LOCKWIN" ] || { echo "FAIL xmessage test window"; exit 1; }
+LOCKWIN=""
+i=0
+while [ -z "$LOCKWIN" ]; do
+  LOCKWIN=$(xdotool search --name lock-test 2>/dev/null | head -1 || true)
+  i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL xmessage test window"; exit 1; }
+  sleep 0.05
+done
 xprop -root -f _NIRU_LOCK_READY 32x -set _NIRU_LOCK_READY "$LOCKWIN"
 notify-send -a Private -t 6000 "Private summary" "must not display"
 sleep 0.3
