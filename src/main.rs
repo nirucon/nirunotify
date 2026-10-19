@@ -49,6 +49,7 @@ struct Notification {
 enum UiCommand {
     Show(Notification),
     Close(u32),
+    CloseClient(u32),
     Osd { channel: String, text: String },
 }
 
@@ -113,7 +114,18 @@ impl NotifyIface {
         shared.notifications.insert(id, notification.clone());
         shared.history.push_back(notification.clone());
         while shared.history.len() > 100 {
+            if let Some(old) = shared.history.front().map(|n| n.id) {
+                shared.notifications.remove(&old);
+            }
             shared.history.pop_front();
+        }
+        // Even a client that never closes a suppressed notification cannot
+        // grow the live map without bound.
+        while shared.notifications.len() > 100 {
+            let Some(old_id) = shared.notifications.keys().copied().min() else {
+                break;
+            };
+            shared.notifications.remove(&old_id);
         }
         if !shared.dnd {
             let _ = shared.ui.send(UiCommand::Show(notification));
@@ -124,7 +136,7 @@ impl NotifyIface {
     fn close_notification(&mut self, id: u32) {
         let _ = self.events.send(UiEvent::ClientClose(id));
         let shared = self.shared.lock().unwrap();
-        let _ = shared.ui.send(UiCommand::Close(id));
+        let _ = shared.ui.send(UiCommand::CloseClient(id));
     }
 
     fn get_capabilities(&self) -> Vec<String> {
@@ -193,7 +205,7 @@ fn router(
     }
 }
 
-fn control_server(shared: Arc<Mutex<Shared>>, events: Sender<UiEvent>) {
+fn control_server(shared: Arc<Mutex<Shared>>) {
     let path = socket_path();
     let _ = std::fs::remove_file(&path);
     let Ok(listener) = UnixListener::bind(&path) else {
@@ -258,7 +270,6 @@ fn control_server(shared: Arc<Mutex<Shared>>, events: Sender<UiEvent>) {
                 let id = parts.next().and_then(|v| v.parse::<u32>().ok());
                 match id {
                     Some(id) => {
-                        let _ = events.send(UiEvent::Closed { id, reason: 2 });
                         let _ = shared.lock().unwrap().ui.send(UiCommand::Close(id));
                         format!("dismissed {id}\n")
                     }
@@ -669,6 +680,7 @@ impl Ui {
         match command {
             UiCommand::Show(n) => self.show(n),
             UiCommand::Close(id) => self.close(id, 2, true),
+            UiCommand::CloseClient(id) => self.close(id, 0, false),
             UiCommand::Osd { channel, text } => self.osd(&channel, &text),
         }
     }
@@ -688,6 +700,9 @@ impl Ui {
         loop {
             while let Ok(command) = self.rx.try_recv() {
                 if self.locked {
+                    if self.pending.len() >= 100 {
+                        self.pending.remove(0);
+                    }
                     self.pending.push(command);
                 } else {
                     self.handle_command(command)?;
@@ -804,8 +819,7 @@ fn daemon() -> Result<()> {
     let router_shared = shared.clone();
     thread::spawn(move || router(router_connection, router_shared, event_rx));
     let control_shared = shared.clone();
-    let control_events = event_tx.clone();
-    thread::spawn(move || control_server(control_shared, control_events));
+    thread::spawn(move || control_server(control_shared));
     let mut ui = Ui::new(cfg, ui_rx, event_tx)?;
     ui.run()
 }

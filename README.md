@@ -3,7 +3,7 @@
 Native notification service and hardware OSD for the NIRU X11 desktop.
 **A personal project for the author's own machines; others are welcome to try it.**
 
-Status: **0.1.0**, an early native provider. NIRUX still defaults to Dunst; select
+Status: **0.1.1**, an early native provider. NIRUX still defaults to Dunst; select
 NIRUNOTIFY explicitly after verifying it on your session.
 
 - Implements `org.freedesktop.Notifications` with replacement IDs, timeouts,
@@ -12,6 +12,8 @@ NIRUNOTIFY explicitly after verifying it on your session.
 - Suppresses and queues content while `_NIRU_LOCK_READY` names a live lock window.
 - DND and history controls through a documented Unix socket CLI.
 - Coalesced hardware OSD: `nirunotify --osd volume 45`.
+- Bounded live/replacement maps, 100-entry history and a 100-command lock queue;
+  `CloseNotification` emits exactly one close reason.
 - No markup or image support; `body` is the advertised capability.
 
 ## Install
