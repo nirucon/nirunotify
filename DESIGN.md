@@ -1,4 +1,4 @@
-# Implementation contract — M4
+# Implementation contract — R6
 
 Design only; no implementation is present. Follow nirux/ROADMAP.md. Do not
 replace Dunst or change installer defaults merely because this repository exists.

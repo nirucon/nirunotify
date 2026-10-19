@@ -12,4 +12,4 @@ placement, appearance, expiry, DND and bounded history. Planned config location:
 
 Implementation contract: [DESIGN.md](DESIGN.md).
 Authoritative tasks, dependencies and release gates:
-[NIRU roadmap, M4](https://github.com/nirucon/nirux/blob/main/ROADMAP.md#m4--native-nirunotify).
+[NIRU roadmap, R6](https://github.com/nirucon/nirux/blob/main/ROADMAP.md).
