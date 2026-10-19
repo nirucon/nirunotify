@@ -3,7 +3,7 @@
 Native notification service and hardware OSD for the NIRU X11 desktop.
 **A personal project for the author's own machines; others are welcome to try it.**
 
-Status: **0.2.0**, an early native provider. NIRUX still defaults to Dunst; select
+Status: **0.2.1**, an early native provider. NIRUX still defaults to Dunst; select
 NIRUNOTIFY explicitly after verifying it on your session.
 
 - Implements `org.freedesktop.Notifications` with replacement IDs, timeouts,
@@ -35,6 +35,7 @@ nirunotify                 # run the service (one bus owner)
 notify-send "Hello" "Body" # ordinary client
 nirunotify --dnd on|off|toggle|status
 nirunotify --history
+nirunotify --count
 nirunotify --dismiss ID
 nirunotify --clear
 nirunotify --osd volume 45

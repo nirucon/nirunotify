@@ -909,6 +909,7 @@ fn main() {
             control(&format!("dnd {action}")).map(|r| print!("{r}"))
         }
         "--history" => control("history").map(|r| print!("{r}")),
+        "--count" => control("visible").map(|r| print!("{}", r.trim())),
         "--clear" => control("clear").map(|r| print!("{r}")),
         "--dismiss" => match args.get(1) {
             Some(id) => control(&format!("dismiss {id}")).map(|r| print!("{r}")),
@@ -923,11 +924,11 @@ fn main() {
         },
         "" => daemon(),
         "--help" => {
-            println!("Usage: nirunotify [--dnd on|off|toggle|status|--history|--clear|--dismiss ID|--osd CHANNEL TEXT|--check-config|--version]");
+            println!("Usage: nirunotify [--dnd on|off|toggle|status|--history|--count|--clear|--dismiss ID|--osd CHANNEL TEXT|--check-config|--version]");
             Ok(())
         }
         _ => {
-            eprintln!("Usage: nirunotify [--dnd on|off|toggle|status|--history|--clear|--dismiss ID|--osd CHANNEL TEXT|--check-config|--version]");
+            eprintln!("Usage: nirunotify [--dnd on|off|toggle|status|--history|--count|--clear|--dismiss ID|--osd CHANNEL TEXT|--check-config|--version]");
             std::process::exit(2);
         }
     };
