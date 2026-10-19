@@ -763,7 +763,16 @@ impl Ui {
         Ok(())
     }
 
+    fn refresh_reserved(&mut self) {
+        let (top, bottom) = reserved_edges(&self.c, self.root);
+        self.reserved_top = top;
+        self.reserved_bottom = bottom;
+    }
+
     fn show(&mut self, notification: Notification) -> Result<()> {
+        // The bar may map after the notifier starts. Re-read its strut so a
+        // notification never starts flush against a newly started bar.
+        self.refresh_reserved();
         let timeout = if notification.timeout_ms == u64::MAX {
             if notification.urgency == 2 {
                 self.cfg.critical_timeout_ms
@@ -806,6 +815,7 @@ impl Ui {
     }
 
     fn osd(&mut self, _channel: &str, text: &str) -> Result<()> {
+        self.refresh_reserved();
         if let Some(old) = self.osd.take() {
             old.destroy(&self.c);
         }

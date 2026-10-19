@@ -3,7 +3,7 @@
 Native notification service and hardware OSD for the NIRU X11 desktop.
 **A personal project for the author's own machines; others are welcome to try it.**
 
-Status: **0.3.1**, an early native provider. NIRUX still defaults to Dunst; select
+Status: **0.3.2**, an early native provider. NIRUX still defaults to Dunst; select
 NIRUNOTIFY explicitly after verifying it on your session.
 
 - Implements `org.freedesktop.Notifications` with replacement IDs, timeouts,
@@ -12,7 +12,8 @@ NIRUNOTIFY explicitly after verifying it on your session.
 - Native themed surfaces; ordinary notifications never take keyboard focus.
 - Selects the pointer monitor, RandR primary or a named output; per-theme
   position/width, a configurable critical timeout/DND policy, and a gap below
-  the bar derived from its strut.
+  the bar derived from its live strut (re-read when the bar maps after the
+  notifier).
 - Suppresses and queues content while `_NIRU_LOCK_READY` names a live lock window.
 - DND and history controls through a documented Unix socket CLI.
 - Coalesced hardware OSD: `nirunotify --osd volume 45`.
