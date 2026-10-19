@@ -385,6 +385,49 @@ fn monitor_area(c: &RustConnection, root: Window, choice: &str) -> (i16, i16, u1
     pointer_hit.unwrap_or(fallback)
 }
 
+/// Space reserved by docks (the bar) at the top and bottom of the root.
+///
+/// The bar publishes `_NET_WM_STRUT_PARTIAL`; notifications start below it so
+/// they never sit flush against the bar. Both strut properties are accepted
+/// for panels that only publish the old four-value form.
+fn reserved_edges(c: &RustConnection, root: Window) -> (u16, u16) {
+    let Ok(tree) = c.query_tree(root) else {
+        return (0, 0);
+    };
+    let Ok(tree) = tree.reply() else {
+        return (0, 0);
+    };
+    let partial = c
+        .intern_atom(false, b"_NET_WM_STRUT_PARTIAL")
+        .ok()
+        .and_then(|r| r.reply().ok())
+        .map(|r| r.atom);
+    let basic = c
+        .intern_atom(false, b"_NET_WM_STRUT")
+        .ok()
+        .and_then(|r| r.reply().ok())
+        .map(|r| r.atom);
+    let mut top = 0u16;
+    let mut bottom = 0u16;
+    for window in tree.children {
+        for atom in [partial, basic].into_iter().flatten() {
+            let Ok(cookie) = c.get_property(false, window, atom, AtomEnum::CARDINAL, 0, 12) else {
+                continue;
+            };
+            let Ok(reply) = cookie.reply() else { continue };
+            let Some(values) = reply.value32() else {
+                continue;
+            };
+            let values: Vec<u32> = values.collect();
+            if values.len() >= 4 {
+                top = top.max(values[2].min(u32::from(u16::MAX)) as u16);
+                bottom = bottom.max(values[3].min(u32::from(u16::MAX)) as u16);
+            }
+        }
+    }
+    (top, bottom)
+}
+
 struct Popup {
     id: Option<u32>,
     win: Window,
@@ -423,6 +466,8 @@ struct Ui {
     width_limit: u16,
     origin_x: i16,
     origin_y: i16,
+    reserved_top: u16,
+    reserved_bottom: u16,
 }
 
 impl Ui {
@@ -432,6 +477,7 @@ impl Ui {
         let geometry = c.get_geometry(root)?.reply()?;
         let lock_atom = c.intern_atom(false, b"_NIRU_LOCK_READY")?.reply()?.atom;
         let (origin_x, origin_y, area_w, area_h) = monitor_area(&c, root, &cfg.monitor);
+        let (reserved_top, reserved_bottom) = reserved_edges(&c, root);
         Ok(Self {
             c,
             root,
@@ -448,6 +494,8 @@ impl Ui {
             width_limit: area_w.min(geometry.width),
             origin_x,
             origin_y,
+            reserved_top,
+            reserved_bottom,
         })
     }
 
@@ -499,7 +547,7 @@ impl Ui {
                 }
                 Position::TopLeft | Position::BottomLeft => self.cfg.margin,
             };
-        let y = self.origin_y + self.cfg.margin;
+        let y = self.origin_y + self.reserved_top as i16 + self.cfg.margin;
         let renderer = Renderer::new(
             &self.c,
             self.root,
@@ -684,7 +732,7 @@ impl Ui {
     }
 
     fn layout(&mut self) -> Result<()> {
-        let mut y = self.origin_y + self.cfg.margin;
+        let mut y = self.origin_y + self.reserved_top as i16 + self.cfg.margin;
         let total: i16 = self
             .popups
             .iter()
@@ -694,7 +742,10 @@ impl Ui {
             self.cfg.position,
             Position::BottomRight | Position::BottomLeft
         ) {
-            y = self.origin_y + self.height_limit as i16 - total - self.cfg.margin;
+            y = self.origin_y + self.height_limit as i16
+                - self.reserved_bottom as i16
+                - total
+                - self.cfg.margin;
         }
         for p in &self.popups {
             let x = self.origin_x
@@ -762,7 +813,9 @@ impl Ui {
         popup.text = text.to_string();
         // OSD is a single centred box, not part of the stack.
         let x = self.origin_x + (self.width_limit as i16 - self.cfg.width as i16) / 2;
-        let y = self.origin_y + (self.height_limit as i16 - popup.height as i16) / 2;
+        let usable =
+            self.height_limit as i16 - self.reserved_top as i16 - self.reserved_bottom as i16;
+        let y = self.origin_y + self.reserved_top as i16 + (usable - popup.height as i16) / 2;
         self.c.configure_window(
             popup.win,
             &ConfigureWindowAux::new().x(x as i32).y(y as i32),
