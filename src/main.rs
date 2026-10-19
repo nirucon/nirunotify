@@ -24,7 +24,7 @@ use std::{
 };
 use x11rb::{
     connection::Connection,
-    protocol::{xproto::*, Event},
+    protocol::{randr::ConnectionExt as _, xproto::*, Event},
     rust_connection::RustConnection,
     wrapper::ConnectionExt as _,
 };
@@ -63,6 +63,7 @@ struct Shared {
     notifications: HashMap<u32, Notification>,
     history: VecDeque<Notification>,
     dnd: bool,
+    critical_ignore_dnd: bool,
     ui: Sender<UiCommand>,
 }
 
@@ -127,7 +128,7 @@ impl NotifyIface {
             };
             shared.notifications.remove(&old_id);
         }
-        if !shared.dnd {
+        if !shared.dnd || (urgency == 2 && shared.critical_ignore_dnd) {
             let _ = shared.ui.send(UiCommand::Show(notification));
         }
         id
@@ -300,6 +301,64 @@ fn control_server(shared: Arc<Mutex<Shared>>) {
     }
 }
 
+/// The monitor selected by config: pointer, RandR primary or a named output.
+fn monitor_area(c: &RustConnection, root: Window, choice: &str) -> (i16, i16, u16, u16) {
+    let setup = c.setup();
+    let screen = &setup.roots[0];
+    let fallback = (0, 0, screen.width_in_pixels, screen.height_in_pixels);
+    let Ok(resources) = c.randr_get_screen_resources_current(root) else {
+        return fallback;
+    };
+    let Ok(resources) = resources.reply() else {
+        return fallback;
+    };
+    let primary = c
+        .randr_get_output_primary(root)
+        .ok()
+        .and_then(|r| r.reply().ok())
+        .map(|r| r.output)
+        .unwrap_or(0);
+    let (px, py) = c
+        .query_pointer(root)
+        .ok()
+        .and_then(|r| r.reply().ok())
+        .map(|r| (r.root_x, r.root_y))
+        .unwrap_or((-1, -1));
+    let mut pointer_hit = None;
+    for output in resources.outputs {
+        let Ok(info) = c.randr_get_output_info(output, resources.config_timestamp) else {
+            continue;
+        };
+        let Ok(info) = info.reply() else { continue };
+        if info.connection != x11rb::protocol::randr::Connection::CONNECTED || info.crtc == 0 {
+            continue;
+        }
+        let Ok(crtc) = c.randr_get_crtc_info(info.crtc, resources.config_timestamp) else {
+            continue;
+        };
+        let Ok(crtc) = crtc.reply() else { continue };
+        if crtc.width == 0 || crtc.height == 0 {
+            continue;
+        }
+        let name = String::from_utf8_lossy(&info.name).to_string();
+        let rect = (crtc.x, crtc.y, crtc.width, crtc.height);
+        if !choice.is_empty() && choice != "primary" && name == choice {
+            return rect;
+        }
+        if choice == "primary" && output == primary {
+            return rect;
+        }
+        if px >= crtc.x
+            && px < crtc.x + crtc.width as i16
+            && py >= crtc.y
+            && py < crtc.y + crtc.height as i16
+        {
+            pointer_hit = Some(rect);
+        }
+    }
+    pointer_hit.unwrap_or(fallback)
+}
+
 struct Popup {
     id: Option<u32>,
     win: Window,
@@ -333,6 +392,8 @@ struct Ui {
     last_lock_check: Instant,
     height_limit: u16,
     width_limit: u16,
+    origin_x: i16,
+    origin_y: i16,
 }
 
 impl Ui {
@@ -341,6 +402,7 @@ impl Ui {
         let root = c.setup().roots[screen].root;
         let geometry = c.get_geometry(root)?.reply()?;
         let lock_atom = c.intern_atom(false, b"_NIRU_LOCK_READY")?.reply()?.atom;
+        let (origin_x, origin_y, area_w, area_h) = monitor_area(&c, root, &cfg.monitor);
         Ok(Self {
             c,
             root,
@@ -353,8 +415,10 @@ impl Ui {
             pending: Vec::new(),
             lock_atom,
             last_lock_check: Instant::now() - Duration::from_secs(1),
-            height_limit: geometry.height,
-            width_limit: geometry.width,
+            height_limit: area_h.min(geometry.height),
+            width_limit: area_w.min(geometry.width),
+            origin_x,
+            origin_y,
         })
     }
 
@@ -389,13 +453,14 @@ impl Ui {
             .max(40);
         let win = self.c.generate_id()?;
         let gc = self.c.generate_id()?;
-        let x = match self.cfg.position {
-            Position::TopRight | Position::BottomRight => {
-                (self.width_limit as i16 - self.cfg.width as i16 - self.cfg.margin).max(0)
-            }
-            Position::TopLeft | Position::BottomLeft => self.cfg.margin,
-        };
-        let y = self.cfg.margin;
+        let x = self.origin_x
+            + match self.cfg.position {
+                Position::TopRight | Position::BottomRight => {
+                    (self.width_limit as i16 - self.cfg.width as i16 - self.cfg.margin).max(0)
+                }
+                Position::TopLeft | Position::BottomLeft => self.cfg.margin,
+            };
+        let y = self.origin_y + self.cfg.margin;
         let renderer = Renderer::new(
             &self.c,
             self.root,
@@ -548,7 +613,7 @@ impl Ui {
     }
 
     fn layout(&mut self) -> Result<()> {
-        let mut y = self.cfg.margin;
+        let mut y = self.origin_y + self.cfg.margin;
         let total: i16 = self
             .popups
             .iter()
@@ -558,15 +623,16 @@ impl Ui {
             self.cfg.position,
             Position::BottomRight | Position::BottomLeft
         ) {
-            y = self.height_limit as i16 - total - self.cfg.margin;
+            y = self.origin_y + self.height_limit as i16 - total - self.cfg.margin;
         }
         for p in &self.popups {
-            let x = match self.cfg.position {
-                Position::TopRight | Position::BottomRight => {
-                    (self.width_limit as i16 - self.cfg.width as i16 - self.cfg.margin).max(0)
-                }
-                Position::TopLeft | Position::BottomLeft => self.cfg.margin,
-            };
+            let x = self.origin_x
+                + match self.cfg.position {
+                    Position::TopRight | Position::BottomRight => {
+                        (self.width_limit as i16 - self.cfg.width as i16 - self.cfg.margin).max(0)
+                    }
+                    Position::TopLeft | Position::BottomLeft => self.cfg.margin,
+                };
             self.c
                 .configure_window(p.win, &ConfigureWindowAux::new().x(x as i32).y(y as i32))?;
             y += p.height as i16 + self.cfg.margin;
@@ -577,7 +643,11 @@ impl Ui {
 
     fn show(&mut self, notification: Notification) -> Result<()> {
         let timeout = if notification.timeout_ms == u64::MAX {
-            self.cfg.default_timeout_ms
+            if notification.urgency == 2 {
+                self.cfg.critical_timeout_ms
+            } else {
+                self.cfg.default_timeout_ms
+            }
         } else if notification.timeout_ms == 0 {
             self.cfg.max_timeout_ms
         } else {
@@ -614,8 +684,8 @@ impl Ui {
         let mut popup = self.create_popup(None, text, self.cfg.palette.accent)?;
         popup.text = text.to_string();
         // OSD is a single centred box, not part of the stack.
-        let x = (self.width_limit as i16 - self.cfg.width as i16) / 2;
-        let y = (self.height_limit as i16 - popup.height as i16) / 2;
+        let x = self.origin_x + (self.width_limit as i16 - self.cfg.width as i16) / 2;
+        let y = self.origin_y + (self.height_limit as i16 - popup.height as i16) / 2;
         self.c.configure_window(
             popup.win,
             &ConfigureWindowAux::new().x(x as i32).y(y as i32),
@@ -799,6 +869,7 @@ fn daemon() -> Result<()> {
         notifications: HashMap::new(),
         history: VecDeque::new(),
         dnd: false,
+        critical_ignore_dnd: cfg.critical_ignore_dnd,
         ui: ui_tx,
     }));
     let iface = NotifyIface {

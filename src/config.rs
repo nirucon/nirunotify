@@ -19,6 +19,11 @@ pub struct Config {
     pub max_visible: usize,
     pub default_timeout_ms: u64,
     pub max_timeout_ms: u64,
+    pub critical_timeout_ms: u64,
+    pub critical_ignore_dnd: bool,
+    /// Empty means the monitor under the pointer; "primary" uses RandR's
+    /// primary output; anything else is matched against an output name.
+    pub monitor: String,
     pub font_path: Option<String>,
     pub font_size: f32,
     pub position: Position,
@@ -60,6 +65,9 @@ impl Default for Config {
             max_visible: 5,
             default_timeout_ms: 6000,
             max_timeout_ms: 60_000,
+            critical_timeout_ms: 30_000,
+            critical_ignore_dnd: false,
+            monitor: String::new(),
             font_path: None,
             font_size: 14.0,
             position: Position::TopRight,
@@ -186,6 +194,15 @@ impl Config {
         if let Some(n) = v.get("max_timeout_ms").and_then(|x| x.as_integer()) {
             cfg.max_timeout_ms = n.clamp(1_000, 600_000) as u64;
         }
+        if let Some(n) = v.get("critical_timeout_ms").and_then(|x| x.as_integer()) {
+            cfg.critical_timeout_ms = n.clamp(1_000, 600_000) as u64;
+        }
+        if let Some(b) = v.get("critical_ignore_dnd").and_then(|x| x.as_bool()) {
+            cfg.critical_ignore_dnd = b;
+        }
+        if let Some(s) = v.get("monitor").and_then(|x| x.as_str()) {
+            cfg.monitor = s.trim().to_string();
+        }
         if let Some(n) = v.get("font_size").and_then(|x| x.as_float()) {
             cfg.font_size = n as f32;
         }
@@ -214,13 +231,16 @@ impl Config {
 
     pub fn describe(&self) -> String {
         format!(
-            "config: {}\nwidth: {}\nmargin: {}\nmax visible: {}\ntimeouts: {}..{} ms\nfont: {} {}\nposition: {:?}",
+            "config: {}\nwidth: {}\nmargin: {}\nmax visible: {}\ntimeouts: {}..{} ms (critical {})\ncritical ignores DND: {}\nmonitor: {}\nfont: {} {}\nposition: {:?}",
             path().display(),
             self.width,
             self.margin,
             self.max_visible,
             self.default_timeout_ms,
             self.max_timeout_ms,
+            self.critical_timeout_ms,
+            self.critical_ignore_dnd,
+            if self.monitor.is_empty() { "pointer" } else { &self.monitor },
             self.font_size,
             self.font_path.as_deref().unwrap_or("auto"),
             self.position
@@ -238,6 +258,18 @@ mod tests {
         let c = Config::from_value(&v).unwrap();
         assert_eq!(c.width, 220);
         assert_eq!(c.max_visible, 12);
+    }
+
+    #[test]
+    fn monitor_and_critical_policy_parse() {
+        let v: toml::Value =
+            "monitor = \"eDP-1\"\ncritical_timeout_ms = 12000\ncritical_ignore_dnd = true"
+                .parse()
+                .unwrap();
+        let c = Config::from_value(&v).unwrap();
+        assert_eq!(c.monitor, "eDP-1");
+        assert_eq!(c.critical_timeout_ms, 12000);
+        assert!(c.critical_ignore_dnd);
     }
 
     #[test]

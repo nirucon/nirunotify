@@ -11,6 +11,11 @@ max_visible = 5
 default_timeout_ms = 6000
 # Upper bound for any timeout, including a client's persistent 0.
 max_timeout_ms = 60000
+# Urgent notifications use this timeout; they may also bypass DND if enabled.
+critical_timeout_ms = 30000
+critical_ignore_dnd = false
+# Empty = monitor under the pointer; "primary" = RandR primary; or an output name.
+monitor = ""
 # font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 font_size = 14.0
 # top-right, top-left, bottom-right or bottom-left.
