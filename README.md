@@ -3,8 +3,8 @@
 Native notification service and hardware OSD for the NIRU X11 desktop.
 **A personal project for the author's own machines; others are welcome to try it.**
 
-Status: **0.3.2**, an early native provider. NIRUX still defaults to Dunst; select
-NIRUNOTIFY explicitly after verifying it on your session.
+NIRUX's `auto` provider starts nirunotify when installed and uses Dunst as fallback.
+Select `native`, `dunst` or `external` explicitly in the WM session configuration.
 
 - Implements `org.freedesktop.Notifications` with replacement IDs, timeouts,
   close reasons, urgency accents, clickable actions/`ActionInvoked`, bounded text
@@ -23,7 +23,12 @@ NIRUNOTIFY explicitly after verifying it on your session.
 
 ## Install
 
+Use [NIRUX](https://github.com/nirucon/nirux#install) for the complete desktop on
+**Void glibc, Debian and Arch Linux**, or install the x86_64/glibc release separately:
+
 ```sh
+git clone https://github.com/nirucon/nirunotify
+cd nirunotify
 ./install.sh
 ./install.sh --build
 ```
@@ -49,6 +54,6 @@ The service exits with a clear error if another notification daemon owns
 `org.freedesktop.Notifications`; it never evicts an existing provider.
 
 Design contract: [DESIGN.md](DESIGN.md) · Roadmap:
-[nirux R6](https://github.com/nirucon/nirux/blob/main/ROADMAP.md).
+[NIRUX roadmap](https://github.com/nirucon/nirux/blob/main/ROADMAP.md).
 
 MIT. Copyright 2026 Nicklas Rudolfsson.
