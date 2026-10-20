@@ -214,14 +214,14 @@ fn appearance_spacing(appearance: &toml::Value, key: &str) -> Option<i16> {
         .and_then(|n| i16::try_from(n).ok())
 }
 
-fn suite_palette_from(base: &std::path::Path) -> Palette {
+fn suite_theme_from(base: &std::path::Path) -> String {
     let Ok(config) = std::fs::read_to_string(base.join("niruwm/config.toml")) else {
-        return Palette::default();
+        return "niru-noir".into();
     };
     let Ok(value) = config.parse::<toml::Value>() else {
-        return Palette::default();
+        return "niru-noir".into();
     };
-    let name = value
+    value
         .get("theme")
         .and_then(|v| v.as_str())
         .filter(|name| {
@@ -230,8 +230,13 @@ fn suite_palette_from(base: &std::path::Path) -> Palette {
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         })
-        .unwrap_or("niru-noir");
-    let mut palette = builtin_theme(name).unwrap_or_default();
+        .unwrap_or("niru-noir")
+        .to_string()
+}
+
+fn suite_palette_from(base: &std::path::Path) -> Palette {
+    let name = suite_theme_from(base);
+    let mut palette = builtin_theme(&name).unwrap_or_default();
     let theme_file = base.join("niruwm/themes").join(format!("{name}.toml"));
     if !theme_file.exists() {
         if let Some(appearance) = appearance_value(base) {
@@ -343,9 +348,7 @@ impl Config {
                 }
             };
         }
-        if let Some(name) = v.get("theme").and_then(|x| x.as_str()) {
-            cfg.theme = name.trim().to_string();
-        }
+        cfg.theme = suite_theme_from(&config_home());
         cfg.palette = suite_palette_from(&config_home());
         if let Some(appearance) = appearance_value(&config_home()) {
             if v.get("font_size").is_none() {
@@ -442,6 +445,7 @@ mod tests {
         std::fs::create_dir_all(wm.join("themes")).unwrap();
         std::fs::write(wm.join("config.toml"), "theme = \"niru-nord\"\n").unwrap();
         let nord = suite_palette_from(&base);
+        assert_eq!(suite_theme_from(&base), "niru-nord");
         assert_eq!(nord.background, 0x2e3440);
         assert_eq!(nord.foreground, 0xeceff4);
         assert_eq!(nord.accent, 0x88c0d0);
@@ -453,6 +457,7 @@ mod tests {
         )
         .unwrap();
         let custom = suite_palette_from(&base);
+        assert_eq!(suite_theme_from(&base), "custom");
         assert_eq!(custom.background, 0x212121);
         assert_eq!(custom.foreground, 0xf0f0f0);
         assert_eq!(custom.accent, 0xffaa00);
