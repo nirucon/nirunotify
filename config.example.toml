@@ -1,5 +1,9 @@
 # NIRUNOTIFY settings.
 # Location: ~/.config/nirunotify/config.toml (or $XDG_CONFIG_HOME/nirunotify/)
+#
+# Colours follow the active NIRUWM theme (`theme` in niruwm/config.toml) and
+# update live after `niructl theme` or `niructl reload`. Font, margin and
+# spacing come from niruwm/appearance.toml unless set explicitly below.
 
 # Width of each notification surface, in pixels.
 width = 360

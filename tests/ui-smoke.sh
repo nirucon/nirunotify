@@ -27,6 +27,9 @@ cat > "$T/body.sh" <<'BODY'
 #!/bin/sh
 set -eu
 BIN="$1"
+mkdir -p "$XDG_CONFIG_HOME/nirunotify" "$XDG_CONFIG_HOME/niruwm"
+printf 'width = 360\n' > "$XDG_CONFIG_HOME/nirunotify/config.toml"
+printf 'theme = "niru-noir"\n' > "$XDG_CONFIG_HOME/niruwm/config.toml"
 count() {
   xdotool search --class NIRUNOTIFY 2>/dev/null | wc -l | tr -d ' '
 }
@@ -43,6 +46,23 @@ while [ "$(count)" -lt 1 ]; do
 done
 ID=$("$BIN" --history | awk 'NR == 1 {print $1}')
 [ -n "$ID" ] || { echo "FAIL no history id"; exit 1; }
+# Live theme/reload: niructl bumps _NIRU_CONFIG_SERIAL. The running service
+# must rebuild existing surfaces with the new theme and width, not just the
+# next notification.
+mkdir -p "$XDG_CONFIG_HOME/nirunotify" "$XDG_CONFIG_HOME/niruwm"
+printf 'width = 500\n' > "$XDG_CONFIG_HOME/nirunotify/config.toml"
+printf 'theme = "niru-nord"\n' > "$XDG_CONFIG_HOME/niruwm/config.toml"
+xprop -root -f _NIRU_CONFIG_SERIAL 32c -set _NIRU_CONFIG_SERIAL 42
+i=0
+while :; do
+  WIN=$(xdotool search --class NIRUNOTIFY 2>/dev/null | head -1 || true)
+  if [ -n "$WIN" ]; then
+    WIDTH=$(xdotool getwindowgeometry --shell "$WIN" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)
+    [ "$WIDTH" = 500 ] && break
+  fi
+  i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL live theme reload did not resize"; exit 1; }
+  sleep 0.05
+done
 notify-send -a TestApp -r "$ID" -t 6000 "Replaced summary" "Body two"
 sleep 0.3
 [ "$(count)" -eq 1 ] || { echo "FAIL replacement created a second window"; exit 1; }

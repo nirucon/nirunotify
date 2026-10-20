@@ -468,6 +468,8 @@ struct Ui {
     origin_y: i16,
     reserved_top: u16,
     reserved_bottom: u16,
+    config_serial: Atom,
+    theme_atom: Atom,
 }
 
 impl Ui {
@@ -476,6 +478,15 @@ impl Ui {
         let root = c.setup().roots[screen].root;
         let geometry = c.get_geometry(root)?.reply()?;
         let lock_atom = c.intern_atom(false, b"_NIRU_LOCK_READY")?.reply()?.atom;
+        let config_serial = c.intern_atom(false, b"_NIRU_CONFIG_SERIAL")?.reply()?.atom;
+        let theme_atom = c.intern_atom(false, b"_NIRUWM_THEME")?.reply()?.atom;
+        // NIRUWM themes are applied with `niructl theme`, which bumps the
+        // config serial; older managers also publish the theme name. Both
+        // are root properties, so one mask covers reload and theme changes.
+        c.change_window_attributes(
+            root,
+            &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+        )?;
         let (origin_x, origin_y, area_w, area_h) = monitor_area(&c, root, &cfg.monitor);
         let (reserved_top, reserved_bottom) = reserved_edges(&c, root);
         Ok(Self {
@@ -496,6 +507,8 @@ impl Ui {
             origin_y,
             reserved_top,
             reserved_bottom,
+            config_serial,
+            theme_atom,
         })
     }
 
@@ -769,6 +782,98 @@ impl Ui {
         self.reserved_bottom = bottom;
     }
 
+    /// Re-read the shared NIRU configuration after a theme or reload command.
+    /// A bad file keeps the last working palette, matching NIRUWM and NIRUBAR.
+    fn reload_config(&mut self) -> Result<()> {
+        let cfg = match Config::load() {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("nirunotify: reload rejected: {e}");
+                return Ok(());
+            }
+        };
+        if cfg == self.cfg {
+            return Ok(());
+        }
+        let rebuild = cfg.width != self.cfg.width
+            || cfg.margin != self.cfg.margin
+            || cfg.max_visible != self.cfg.max_visible
+            || cfg.monitor != self.cfg.monitor
+            || cfg.font_path != self.cfg.font_path
+            || cfg.font_size != self.cfg.font_size
+            || cfg.position != self.cfg.position
+            || cfg.palette != self.cfg.palette;
+        if !rebuild {
+            self.cfg = cfg;
+            return Ok(());
+        }
+        self.apply_config(cfg)
+    }
+
+    fn apply_config(&mut self, cfg: Config) -> Result<()> {
+        let mut notifications = Vec::new();
+        for popup in self.popups.drain(..) {
+            notifications.push((
+                popup.id,
+                popup.text.clone(),
+                popup.actions.clone(),
+                popup.notification.clone(),
+                popup.expires,
+            ));
+            popup.destroy(&self.c);
+        }
+        let osd = self.osd.take().map(|popup| {
+            let state = (popup.text.clone(), popup.expires);
+            popup.destroy(&self.c);
+            state
+        });
+        self.cfg = cfg;
+        let geometry = self.c.get_geometry(self.root)?.reply()?;
+        let (origin_x, origin_y, area_w, area_h) =
+            monitor_area(&self.c, self.root, &self.cfg.monitor);
+        let (reserved_top, reserved_bottom) = reserved_edges(&self.c, self.root);
+        self.origin_x = origin_x;
+        self.origin_y = origin_y;
+        self.height_limit = area_h.min(geometry.height);
+        self.width_limit = area_w.min(geometry.width);
+        self.reserved_top = reserved_top;
+        self.reserved_bottom = reserved_bottom;
+        for (id, text, actions, notification, expires) in notifications {
+            let mut popup = self.create_popup(id, &text, self.cfg.palette.accent, &actions)?;
+            popup.notification = notification;
+            popup.expires = expires;
+            self.popups.push(popup);
+        }
+        while self.popups.len() > self.cfg.max_visible {
+            if let Some(old) = self.popups.pop() {
+                old.destroy(&self.c);
+            }
+        }
+        for index in 0..self.popups.len() {
+            self.draw_popup(index)?;
+        }
+        self.layout()?;
+        if let Some((text, expires)) = osd {
+            let mut popup = self.create_popup(None, &text, self.cfg.palette.accent, &[])?;
+            popup.expires = expires;
+            self.place_osd(&mut popup)?;
+            self.osd = Some(popup);
+        }
+        self.expire()
+    }
+
+    fn place_osd(&mut self, popup: &mut Popup) -> Result<()> {
+        let x = self.origin_x + (self.width_limit as i16 - self.cfg.width as i16) / 2;
+        let usable =
+            self.height_limit as i16 - self.reserved_top as i16 - self.reserved_bottom as i16;
+        let y = self.origin_y + self.reserved_top as i16 + (usable - popup.height as i16) / 2;
+        self.c.configure_window(
+            popup.win,
+            &ConfigureWindowAux::new().x(x as i32).y(y as i32),
+        )?;
+        self.draw_osd(popup)
+    }
+
     fn show(&mut self, notification: Notification) -> Result<()> {
         // The bar may map after the notifier starts. Re-read its strut so a
         // notification never starts flush against a newly started bar.
@@ -822,15 +927,7 @@ impl Ui {
         let mut popup = self.create_popup(None, text, self.cfg.palette.accent, &[])?;
         popup.text = text.to_string();
         // OSD is a single centred box, not part of the stack.
-        let x = self.origin_x + (self.width_limit as i16 - self.cfg.width as i16) / 2;
-        let usable =
-            self.height_limit as i16 - self.reserved_top as i16 - self.reserved_bottom as i16;
-        let y = self.origin_y + self.reserved_top as i16 + (usable - popup.height as i16) / 2;
-        self.c.configure_window(
-            popup.win,
-            &ConfigureWindowAux::new().x(x as i32).y(y as i32),
-        )?;
-        self.draw_osd(&mut popup)?;
+        self.place_osd(&mut popup)?;
         self.osd = Some(popup);
         self.c.flush()?;
         Ok(())
@@ -976,6 +1073,12 @@ impl Ui {
                                 self.osd = Some(p);
                             }
                         }
+                    }
+                    Event::PropertyNotify(e)
+                        if e.window == self.root
+                            && (e.atom == self.config_serial || e.atom == self.theme_atom) =>
+                    {
+                        self.reload_config()?;
                     }
                     Event::Error(e) => eprintln!("nirunotify: X11 error: {e:?}"),
                     _ => {}

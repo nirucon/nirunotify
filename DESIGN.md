@@ -18,8 +18,9 @@ Treat untrusted notification text and action names as data, not shell commands.
 
 ## Rendering and resources
 
-Configurable NIRU palette, font, width, padding, row limits, margins, placement,
-monitor selection, urgency policy and timeouts. Clamp the stack to the selected
+NIRU palette sourced from the active NIRUWM theme, with live reload on
+`niructl theme`/`niructl reload`; configurable font, width, padding, row limits,
+margins, placement, monitor selection, urgency policy and timeouts. Clamp the stack to the selected
 monitor's work area. Support notification updates and monitor disappearance
 without leaks. No keyboard grab for ordinary notifications; explicit click
 actions, clear dismiss behaviour, and no steal-focus window policy.

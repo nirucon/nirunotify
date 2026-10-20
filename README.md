@@ -9,7 +9,8 @@ Select `native`, `dunst` or `external` explicitly in the WM session configuratio
 - Implements `org.freedesktop.Notifications` with replacement IDs, timeouts,
   close reasons, urgency accents, clickable actions/`ActionInvoked`, bounded text
   and memory-only history.
-- Native themed surfaces; ordinary notifications never take keyboard focus.
+- Native surfaces that follow the active NIRUWM theme, including live
+  `niructl theme` and `niructl reload` changes to existing notifications and OSD.
 - Selects the pointer monitor, RandR primary or a named output; per-theme
   position/width, a configurable critical timeout/DND policy, and a gap below
   the bar derived from its live strut (re-read when the bar maps after the
@@ -34,7 +35,10 @@ cd nirunotify
 ```
 
 Requires a session D-Bus and X11. Settings:
-`~/.config/nirunotify/config.toml` (see `config.example.toml`).
+`~/.config/nirunotify/config.toml` (see `config.example.toml`). Colours are
+not duplicated here: surfaces follow `theme` in `~/.config/niruwm/config.toml`
+and reuse the shared appearance font, margin and spacing. `--check-config`
+prints the effective theme and palette.
 
 ## Use
 

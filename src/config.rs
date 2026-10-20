@@ -12,7 +12,7 @@ pub enum Position {
     BottomLeft,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Config {
     pub width: u16,
     pub margin: i16,
@@ -26,11 +26,12 @@ pub struct Config {
     pub monitor: String,
     pub font_path: Option<String>,
     pub font_size: f32,
+    pub theme: String,
     pub position: Position,
     pub palette: Palette,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Palette {
     pub background: u32,
     pub surface: u32,
@@ -70,6 +71,7 @@ impl Default for Config {
             monitor: String::new(),
             font_path: None,
             font_size: 14.0,
+            theme: "niru-noir".into(),
             position: Position::TopRight,
             palette: Palette::default(),
         }
@@ -222,6 +224,12 @@ fn suite_palette_from(base: &std::path::Path) -> Palette {
     let name = value
         .get("theme")
         .and_then(|v| v.as_str())
+        .filter(|name| {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
         .unwrap_or("niru-noir");
     let mut palette = builtin_theme(name).unwrap_or_default();
     let theme_file = base.join("niruwm/themes").join(format!("{name}.toml"));
@@ -241,6 +249,9 @@ fn suite_palette_from(base: &std::path::Path) -> Palette {
                     *field = colour;
                 }
             }
+            if appearance_colour(&appearance, "surface").is_none() {
+                palette.surface = blend(palette.background, palette.foreground, 0.08);
+            }
         }
     }
     let Ok(text) = std::fs::read_to_string(&theme_file) else {
@@ -257,8 +268,11 @@ fn suite_palette_from(base: &std::path::Path) -> Palette {
             .unwrap_or(fallback)
     };
     palette.background = get("background", palette.background);
-    palette.surface = get("surface", palette.surface);
     palette.foreground = get("foreground", palette.foreground);
+    palette.surface = get(
+        "surface",
+        blend(palette.background, palette.foreground, 0.08),
+    );
     palette.muted = get("muted", palette.muted);
     palette.border = get("border", palette.border);
     palette.accent = get("accent", get("focus", palette.accent));
@@ -329,6 +343,9 @@ impl Config {
                 }
             };
         }
+        if let Some(name) = v.get("theme").and_then(|x| x.as_str()) {
+            cfg.theme = name.trim().to_string();
+        }
         cfg.palette = suite_palette_from(&config_home());
         if let Some(appearance) = appearance_value(&config_home()) {
             if v.get("font_size").is_none() {
@@ -355,8 +372,9 @@ impl Config {
 
     pub fn describe(&self) -> String {
         format!(
-            "config: {}\nwidth: {}\nmargin: {}\nmax visible: {}\ntimeouts: {}..{} ms (critical {})\ncritical ignores DND: {}\nmonitor: {}\nfont: {} {}\nposition: {:?}",
+            "config: {}\ntheme: {}\nwidth: {}\nmargin: {}\nmax visible: {}\ntimeouts: {}..{} ms (critical {})\ncritical ignores DND: {}\nmonitor: {}\nfont: {} {}\nposition: {:?}\npalette: background={:06x} surface={:06x} foreground={:06x} muted={:06x} border={:06x} accent={:06x} warning={:06x} error={:06x}",
             path().display(),
+            self.theme,
             self.width,
             self.margin,
             self.max_visible,
@@ -367,7 +385,15 @@ impl Config {
             if self.monitor.is_empty() { "pointer" } else { &self.monitor },
             self.font_size,
             self.font_path.as_deref().unwrap_or("auto"),
-            self.position
+            self.position,
+            self.palette.background,
+            self.palette.surface,
+            self.palette.foreground,
+            self.palette.muted,
+            self.palette.border,
+            self.palette.accent,
+            self.palette.warning,
+            self.palette.error
         )
     }
 }
@@ -400,5 +426,40 @@ mod tests {
     fn position_is_validated() {
         let v: toml::Value = "position = \"sideways\"".parse().unwrap();
         assert!(Config::from_value(&v).is_err());
+    }
+
+    #[test]
+    fn palette_follows_theme_and_custom_surface() {
+        let base = std::env::temp_dir().join(format!(
+            "nirunotify-theme-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let wm = base.join("niruwm");
+        std::fs::create_dir_all(wm.join("themes")).unwrap();
+        std::fs::write(wm.join("config.toml"), "theme = \"niru-nord\"\n").unwrap();
+        let nord = suite_palette_from(&base);
+        assert_eq!(nord.background, 0x2e3440);
+        assert_eq!(nord.foreground, 0xeceff4);
+        assert_eq!(nord.accent, 0x88c0d0);
+
+        std::fs::write(wm.join("config.toml"), "theme = \"custom\"\n").unwrap();
+        std::fs::write(
+            wm.join("themes/custom.toml"),
+            "background = \"212121\"\nforeground = \"f0f0f0\"\nfocus = \"ffaa00\"\n",
+        )
+        .unwrap();
+        let custom = suite_palette_from(&base);
+        assert_eq!(custom.background, 0x212121);
+        assert_eq!(custom.foreground, 0xf0f0f0);
+        assert_eq!(custom.accent, 0xffaa00);
+        assert_eq!(
+            custom.surface,
+            blend(custom.background, custom.foreground, 0.08)
+        );
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }
