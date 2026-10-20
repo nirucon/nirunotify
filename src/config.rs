@@ -126,6 +126,92 @@ fn blend(a: u32, b: u32, amount: f32) -> u32 {
         | mix(a & 0xff, b & 0xff)
 }
 
+/// Versioned appearance contract. Invalid input is ignored; the last working
+/// theme (built-in or user file) stays in effect.
+fn appearance_value(base: &std::path::Path) -> Option<toml::Value> {
+    let path = base.join("niruwm/appearance.toml");
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            eprintln!("nirunotify: {}: {e}", path.display());
+            return None;
+        }
+    };
+    let value: toml::Value = match text.parse() {
+        Ok(value) => value,
+        Err(e) => {
+            eprintln!("nirunotify: {}: {e}", path.display());
+            return None;
+        }
+    };
+    if value.get("schema").and_then(|v| v.as_integer()) != Some(1) {
+        eprintln!(
+            "nirunotify: {}: unsupported appearance schema",
+            path.display()
+        );
+        return None;
+    }
+    if let Some(colors) = value.get("colors") {
+        let Some(colors) = colors.as_table() else {
+            eprintln!("nirunotify: {}: colors must be a table", path.display());
+            return None;
+        };
+        for colour in colors.values() {
+            let Some(text) = colour.as_str() else {
+                eprintln!("nirunotify: {}: colours must be strings", path.display());
+                return None;
+            };
+            if parse_hex(text).is_none() {
+                eprintln!("nirunotify: {}: invalid colour {text:?}", path.display());
+                return None;
+            }
+        }
+    }
+    if let Some(size) = value.get("font").and_then(|font| font.get("size")) {
+        if !size
+            .as_float()
+            .is_some_and(|size| size.is_finite() && size > 0.0)
+        {
+            eprintln!("nirunotify: {}: font.size must be positive", path.display());
+            return None;
+        }
+    }
+    Some(value)
+}
+
+fn appearance_colour(appearance: &toml::Value, key: &str) -> Option<u32> {
+    appearance
+        .get("colors")?
+        .get(key)?
+        .as_str()
+        .and_then(parse_hex)
+}
+
+fn appearance_size(appearance: &toml::Value) -> Option<f32> {
+    appearance
+        .get("font")?
+        .get("size")?
+        .as_float()
+        .map(|v| v as f32)
+}
+
+fn appearance_path(appearance: &toml::Value) -> Option<String> {
+    appearance
+        .get("font")?
+        .get("path")?
+        .as_str()
+        .map(str::to_string)
+}
+
+fn appearance_spacing(appearance: &toml::Value, key: &str) -> Option<i16> {
+    appearance
+        .get("spacing")?
+        .get(key)?
+        .as_integer()
+        .and_then(|n| i16::try_from(n).ok())
+}
+
 fn suite_palette_from(base: &std::path::Path) -> Palette {
     let Ok(config) = std::fs::read_to_string(base.join("niruwm/config.toml")) else {
         return Palette::default();
@@ -138,8 +224,26 @@ fn suite_palette_from(base: &std::path::Path) -> Palette {
         .and_then(|v| v.as_str())
         .unwrap_or("niru-noir");
     let mut palette = builtin_theme(name).unwrap_or_default();
-    let Ok(text) = std::fs::read_to_string(base.join("niruwm/themes").join(format!("{name}.toml")))
-    else {
+    let theme_file = base.join("niruwm/themes").join(format!("{name}.toml"));
+    if !theme_file.exists() {
+        if let Some(appearance) = appearance_value(base) {
+            for (field, key) in [
+                (&mut palette.background, "background"),
+                (&mut palette.surface, "surface"),
+                (&mut palette.foreground, "foreground"),
+                (&mut palette.muted, "muted"),
+                (&mut palette.border, "border"),
+                (&mut palette.accent, "focus"),
+                (&mut palette.warning, "warning"),
+                (&mut palette.error, "error"),
+            ] {
+                if let Some(colour) = appearance_colour(&appearance, key) {
+                    *field = colour;
+                }
+            }
+        }
+    }
+    let Ok(text) = std::fs::read_to_string(&theme_file) else {
         return palette;
     };
     let Ok(theme) = text.parse::<toml::Value>() else {
@@ -168,7 +272,10 @@ impl Config {
         let path = path();
         let text = match std::fs::read_to_string(&path) {
             Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let empty = toml::Value::Table(Default::default());
+                return Self::from_value(&empty);
+            }
             Err(e) => return Err(format!("{}: {e}", path.display()).into()),
         };
         let value: toml::Value = text
@@ -223,6 +330,23 @@ impl Config {
             };
         }
         cfg.palette = suite_palette_from(&config_home());
+        if let Some(appearance) = appearance_value(&config_home()) {
+            if v.get("font_size").is_none() {
+                if let Some(size) = appearance_size(&appearance) {
+                    cfg.font_size = size;
+                }
+            }
+            if v.get("font_path").is_none() {
+                if let Some(path) = appearance_path(&appearance) {
+                    cfg.font_path = Some(path);
+                }
+            }
+            if v.get("margin").is_none() {
+                if let Some(margin) = appearance_spacing(&appearance, "margin") {
+                    cfg.margin = margin.clamp(0, 100);
+                }
+            }
+        }
         if !(8.0..=32.0).contains(&cfg.font_size) {
             return Err("font_size must be 8..32".into());
         }
