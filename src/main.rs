@@ -440,6 +440,7 @@ struct Popup {
     actions: Vec<(String, String)>,
     /// Action key and its clickable rectangle inside the popup.
     hitboxes: Vec<(String, i16, i16, u16, u16)>,
+    last_raise: Instant,
 }
 
 impl Popup {
@@ -447,6 +448,15 @@ impl Popup {
         let _ = self.renderer.release(c);
         let _ = c.destroy_window(self.win);
         let _ = c.free_gc(self.gc);
+    }
+
+    fn raise(&mut self, c: &RustConnection) -> Result<()> {
+        c.configure_window(
+            self.win,
+            &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
+        )?;
+        self.last_raise = Instant::now();
+        Ok(())
     }
 }
 
@@ -470,6 +480,10 @@ struct Ui {
     reserved_bottom: u16,
     config_serial: Atom,
     theme_atom: Atom,
+    window_type_atom: Atom,
+    window_state_atom: Atom,
+    notification_type_atom: Atom,
+    above_state_atom: Atom,
 }
 
 impl Ui {
@@ -480,6 +494,13 @@ impl Ui {
         let lock_atom = c.intern_atom(false, b"_NIRU_LOCK_READY")?.reply()?.atom;
         let config_serial = c.intern_atom(false, b"_NIRU_CONFIG_SERIAL")?.reply()?.atom;
         let theme_atom = c.intern_atom(false, b"_NIRUWM_THEME")?.reply()?.atom;
+        let window_type_atom = c.intern_atom(false, b"_NET_WM_WINDOW_TYPE")?.reply()?.atom;
+        let window_state_atom = c.intern_atom(false, b"_NET_WM_STATE")?.reply()?.atom;
+        let notification_type_atom = c
+            .intern_atom(false, b"_NET_WM_WINDOW_TYPE_NOTIFICATION")?
+            .reply()?
+            .atom;
+        let above_state_atom = c.intern_atom(false, b"_NET_WM_STATE_ABOVE")?.reply()?.atom;
         // NIRUWM themes are applied with `niructl theme`, which bumps the
         // config serial; older managers also publish the theme name. Both
         // are root properties, so one mask covers reload and theme changes.
@@ -509,6 +530,10 @@ impl Ui {
             reserved_bottom,
             config_serial,
             theme_atom,
+            window_type_atom,
+            window_state_atom,
+            notification_type_atom,
+            above_state_atom,
         })
     }
 
@@ -540,17 +565,17 @@ impl Ui {
         actions: &[(String, String)],
     ) -> Result<Popup> {
         let padding = 12i16;
-        let max_chars = ((self.cfg.width as i16 - padding * 2) / 8).max(12) as usize;
+        let (advance, line_height) =
+            Renderer::measure(self.cfg.font_path.as_deref(), self.cfg.font_size)?;
+        let line_step = (line_height + 6).max(12) as u16;
+        let max_chars =
+            ((self.cfg.width as i16 - padding * 2 - 6) / advance.max(1)).max(8) as usize;
         let lines = wrap(text, max_chars, 8);
-        let line_h = 20u16;
-        let app_h = if id.is_some() { line_h } else { 0 };
-        let height = (padding as u16 * 2
-            + line_h
-            + lines.len() as u16 * line_h
-            + app_h
-            + actions.len() as u16 * line_h)
-            .min(self.height_limit.saturating_sub(20))
-            .max(40);
+        let rows = lines.len() as u16 + actions.len() as u16 + u16::from(id.is_some());
+        let height =
+            (padding as u16 * 2 + line_height as u16 + rows.saturating_sub(1) * line_step + 6)
+                .min(self.height_limit.saturating_sub(20))
+                .max(40);
         let win = self.c.generate_id()?;
         let gc = self.c.generate_id()?;
         let x = self.origin_x
@@ -583,7 +608,9 @@ impl Ui {
             &CreateWindowAux::new()
                 .override_redirect(1)
                 .background_pixel(self.cfg.palette.surface)
-                .event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS),
+                .event_mask(
+                    EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::VISIBILITY_CHANGE,
+                ),
         )?;
         self.c.create_gc(gc, win, &CreateGCAux::new())?;
         self.c.change_property8(
@@ -600,7 +627,23 @@ impl Ui {
             AtomEnum::STRING,
             b"nirunotify\0NIRUNOTIFY\0",
         )?;
+        self.c.change_property32(
+            PropMode::REPLACE,
+            win,
+            self.window_type_atom,
+            AtomEnum::ATOM,
+            &[self.notification_type_atom],
+        )?;
+        self.c.change_property32(
+            PropMode::REPLACE,
+            win,
+            self.window_state_atom,
+            AtomEnum::ATOM,
+            &[self.above_state_atom],
+        )?;
         self.c.map_window(win)?;
+        self.c
+            .configure_window(win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
         let timeout = if id.is_some() {
             Duration::from_millis(
                 self.cfg
@@ -622,6 +665,7 @@ impl Ui {
             text: text.to_string(),
             actions: actions.to_vec(),
             hitboxes: Vec::new(),
+            last_raise: Instant::now(),
         })
     }
 
@@ -671,6 +715,7 @@ impl Ui {
             .as_ref()
             .map(|n| n.app.clone())
             .unwrap_or_default();
+        let line_step = (p.renderer.line_height + 6).max(12);
         let mut baseline = padding + p.renderer.line_height;
         p.renderer.line(
             &self.c,
@@ -686,7 +731,7 @@ impl Ui {
             ((self.cfg.width as i16 - padding * 2 - 6) / p.renderer.advance.max(1)) as usize,
             8,
         ) {
-            baseline += 20;
+            baseline += line_step;
             p.renderer.line(
                 &self.c,
                 gc,
@@ -698,7 +743,7 @@ impl Ui {
             )?;
         }
         if !app.is_empty() {
-            baseline += 20;
+            baseline += line_step;
             p.renderer.line(
                 &self.c,
                 gc,
@@ -712,7 +757,7 @@ impl Ui {
         p.hitboxes.clear();
         let action_count = p.actions.len();
         for (index, (key, label)) in p.actions.iter().enumerate() {
-            baseline += 20;
+            baseline += line_step;
             let text = format!("[ {label} ]");
             p.renderer.line(
                 &self.c,
@@ -733,7 +778,7 @@ impl Ui {
                 padding + 4,
                 top,
                 self.cfg.width.saturating_sub((padding * 2 + 4) as u16),
-                20,
+                line_step as u16,
             ));
             if index + 1 == action_count {
                 break;
@@ -768,8 +813,13 @@ impl Ui {
                     }
                     Position::TopLeft | Position::BottomLeft => self.cfg.margin,
                 };
-            self.c
-                .configure_window(p.win, &ConfigureWindowAux::new().x(x as i32).y(y as i32))?;
+            self.c.configure_window(
+                p.win,
+                &ConfigureWindowAux::new()
+                    .x(x as i32)
+                    .y(y as i32)
+                    .stack_mode(StackMode::ABOVE),
+            )?;
             y += p.height as i16 + self.cfg.margin;
         }
         self.c.flush()?;
@@ -1071,6 +1121,16 @@ impl Ui {
                             if let Some(mut p) = self.osd.take() {
                                 self.draw_osd(&mut p)?;
                                 self.osd = Some(p);
+                            }
+                        }
+                    }
+                    Event::VisibilityNotify(e) => {
+                        if let Some(index) = self.popups.iter().position(|p| p.win == e.window) {
+                            let popup = &mut self.popups[index];
+                            if e.state != Visibility::UNOBSCURED
+                                && popup.last_raise.elapsed() >= Duration::from_millis(100)
+                            {
+                                popup.raise(&self.c)?;
                             }
                         }
                     }

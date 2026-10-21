@@ -12,6 +12,8 @@ Select `native`, `dunst` or `external` explicitly in the WM session configuratio
 - Native surfaces that follow the active NIRUWM theme, including live
   `niructl theme` and `niructl reload` changes to existing notifications and OSD.
   The urgency strip uses the theme accent, muted and error colours.
+- Popups stay above ordinary windows and re-raise when covered, without taking
+  keyboard focus. Wrapping and height follow the configured font metrics.
 - Selects the pointer monitor, RandR primary or a named output; per-theme
   position/width, a configurable critical timeout/DND policy, and a gap below
   the bar derived from its live strut (re-read when the bar maps after the

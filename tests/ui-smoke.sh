@@ -63,6 +63,27 @@ while :; do
   i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL live theme reload did not resize"; exit 1; }
   sleep 0.05
 done
+# Stacking: a later window that covers the popup must not stay above it.
+xmessage -title stack-test -buttons OK -center stack-test >/dev/null 2>&1 &
+STACK_PID=$!
+i=0
+while [ -z "$(xdotool search --name '^stack-test$' 2>/dev/null | head -1 || true)" ]; do
+  i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL stack-test window"; exit 1; }
+  sleep 0.05
+done
+STACK_WIN=$(xdotool search --name '^stack-test$' | head -1)
+NOTIFY_WIN=$(xdotool search --class NIRUNOTIFY | head -1)
+eval "$(xdotool getwindowgeometry --shell "$NOTIFY_WIN" | sed -n 's/^\([XY]=\)/\1/p')"
+xdotool windowmove "$STACK_WIN" "$X" "$Y"
+xdotool windowraise "$STACK_WIN"
+sleep 0.5
+notify_line=$(xwininfo -root -tree | grep -n 'NIRUNOTIFY' | head -1 | cut -d: -f1)
+stack_line=$(xwininfo -root -tree | grep -n '"stack-test"' | head -1 | cut -d: -f1)
+[ -n "$notify_line" ] && [ -n "$stack_line" ] && [ "$notify_line" -lt "$stack_line" ] || {
+  echo "FAIL notification stayed below a covering window"
+  exit 1
+}
+kill "$STACK_PID" 2>/dev/null || :
 notify-send -a TestApp -r "$ID" -t 6000 "Replaced summary" "Body two"
 sleep 0.3
 [ "$(count)" -eq 1 ] || { echo "FAIL replacement created a second window"; exit 1; }
