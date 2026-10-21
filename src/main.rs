@@ -654,8 +654,8 @@ impl Ui {
                 height,
             },
             match notification.as_ref().map(|n| n.urgency).unwrap_or(1) {
-                0 => pal.error,
-                2 => pal.warning,
+                0 => pal.muted,
+                2 => pal.error,
                 _ => pal.accent,
             },
         )?;

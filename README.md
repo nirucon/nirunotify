@@ -11,6 +11,7 @@ Select `native`, `dunst` or `external` explicitly in the WM session configuratio
   and memory-only history.
 - Native surfaces that follow the active NIRUWM theme, including live
   `niructl theme` and `niructl reload` changes to existing notifications and OSD.
+  The urgency strip uses the theme accent, muted and error colours.
 - Selects the pointer monitor, RandR primary or a named output; per-theme
   position/width, a configurable critical timeout/DND policy, and a gap below
   the bar derived from its live strut (re-read when the bar maps after the
