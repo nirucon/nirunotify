@@ -1,10 +1,11 @@
 # NIRUNOTIFY
 
-Native notification service and hardware OSD for the NIRU X11 desktop. It owns
+**Part of [NIRUX - A minimal X11 desktop by Nicklas Rudolfsson](https://github.com/nirucon/nirux).**
+
+**Early beta.** Native notification service and hardware OSD for the NIRU X11 desktop. It owns
 `org.freedesktop.Notifications` when no other provider is active; Dunst remains
 the fallback.
 
-Part of the [NIRUX suite](https://github.com/nirucon/nirux): [NIRUWM](https://github.com/nirucon/niruwm) · [NIRUBAR](https://github.com/nirucon/nirubar) · [NIRUSCREENSAVER](https://github.com/nirucon/niruscreensaver) · [NIRULOCK](https://github.com/nirucon/nirulock) · [NIRULAUNCHER](https://github.com/nirucon/nirulauncher) · [NIRUNOTIFY](https://github.com/nirucon/nirunotify) · [NIRUSHOT](https://github.com/nirucon/nirushot).
 
 ## Features
 
@@ -55,6 +56,10 @@ nirunotify --check-config
 
 The service exits with a clear error if another daemon owns the bus name; it
 never evicts an existing provider.
+
+## NIRUX suite
+
+[NIRUX](https://github.com/nirucon/nirux) · [NIRUWM](https://github.com/nirucon/niruwm) · [NIRUBAR](https://github.com/nirucon/nirubar) · [NIRUSCREENSAVER](https://github.com/nirucon/niruscreensaver) · [NIRULOCK](https://github.com/nirucon/nirulock) · [NIRULAUNCHER](https://github.com/nirucon/nirulauncher) · [NIRUNOTIFY](https://github.com/nirucon/nirunotify) · [NIRUSHOT](https://github.com/nirucon/nirushot)
 
 ## Development
 
