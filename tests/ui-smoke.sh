@@ -46,6 +46,21 @@ while [ "$(count)" -lt 1 ]; do
 done
 ID=$("$BIN" --history | awk 'NR == 1 {print $1}')
 [ -n "$ID" ] || { echo "FAIL no history id"; exit 1; }
+# Rendered theme values: critical strip is the theme error colour and the
+# popup body is the derived surface colour.
+WIN=$(xdotool search --class NIRUNOTIFY | head -1)
+xwd -id "$WIN" -silent > "$T/notify.xwd"
+colours=$(convert "$T/notify.xwd" -format %c histogram:info:- 2>/dev/null)
+printf '%s\n' "$colours" | grep -qi '#d77a7a' || {
+  echo "FAIL theme error strip not rendered"
+  printf '%s\n' "$colours" | head -20
+  exit 1
+}
+printf '%s\n' "$colours" | grep -qi '#202021' || {
+  echo "FAIL theme surface not rendered"
+  printf '%s\n' "$colours" | head -20
+  exit 1
+}
 # Live theme/reload: niructl bumps _NIRU_CONFIG_SERIAL. The running service
 # must rebuild existing surfaces with the new theme and width, not just the
 # next notification.

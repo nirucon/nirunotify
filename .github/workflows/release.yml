@@ -15,7 +15,7 @@ jobs:
       - name: Install musl and test tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools dbus-x11 xvfb xdotool x11-utils libnotify-bin
+          sudo apt-get install -y musl-tools dbus-x11 xvfb xdotool x11-utils x11-apps imagemagick libnotify-bin
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked

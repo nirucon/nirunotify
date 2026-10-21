@@ -13,7 +13,7 @@ jobs:
       - run: cargo test --locked
       - name: D-Bus and X11 smoke test
         run: |
-          sudo apt-get update && sudo apt-get install -y dbus-x11 xvfb xdotool x11-utils libnotify-bin
+          sudo apt-get update && sudo apt-get install -y dbus-x11 xvfb xdotool x11-utils x11-apps imagemagick libnotify-bin
           cargo build --release --locked
           sh tests/ui-smoke.sh target/release/nirunotify
       - name: Shellcheck
