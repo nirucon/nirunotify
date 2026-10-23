@@ -6,7 +6,7 @@
 #   ./install.sh --uninstall remove the binary; configuration is kept
 set -eu
 
-VERSION="0.3.9"
+VERSION="0.3.10"
 REPO="${NIRUNOTIFY_REPO:-nirucon/nirunotify}"
 PREFIX="${NIRUNOTIFY_PREFIX:-$HOME/.local}"
 BINDIR="$PREFIX/bin"
