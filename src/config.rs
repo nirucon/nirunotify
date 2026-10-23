@@ -103,6 +103,8 @@ fn builtin_theme(name: &str) -> Option<Palette> {
         "niru-nord" => (0x2e3440, 0xeceff4, 0x9aa5b1, 0x3b4252, 0x88c0d0),
         "niru-satie" => (0x141414, 0xdedad4, 0x8f8b86, 0x2a2724, 0xb08d7d),
         "niru-carl-larsson" => (0xf3ece0, 0x3b3228, 0x7d6f5f, 0xd8cdbb, 0xa63d2f),
+        "niru-forest-vigil" => (0x0b100c, 0xd8ded2, 0x96a292, 0x2b362c, 0x8aa87e),
+        "niru-blood-of-urdr" => (0x120808, 0xe8d6cf, 0xb09a92, 0x3a1d1b, 0xc96050),
         _ => return None,
     };
     Some(Palette {
