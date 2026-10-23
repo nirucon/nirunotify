@@ -6,7 +6,7 @@
 #   ./install.sh --uninstall remove the binary; configuration is kept
 set -eu
 
-VERSION="0.3.7"
+VERSION="0.3.8"
 REPO="${NIRUNOTIFY_REPO:-nirucon/nirunotify}"
 PREFIX="${NIRUNOTIFY_PREFIX:-$HOME/.local}"
 BINDIR="$PREFIX/bin"
@@ -36,6 +36,13 @@ install_config() {
   fi
 }
 
+managed_guard() {
+  [ -L "$BINDIR/nirunotify" ] || return 0
+  case "$(readlink "$BINDIR/nirunotify")" in
+    */share/nirux/current/bin/nirunotify) die 'NIRUNOTIFY is managed by NIRUX; use nirux update.' ;;
+  esac
+}
+managed_guard
 case "${1:-}" in
   --build)
     need cargo || die "cargo is required for --build"
