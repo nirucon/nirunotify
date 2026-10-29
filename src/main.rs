@@ -139,7 +139,7 @@ impl NotifyIface {
         }
         if !shared.dnd || (urgency == 2 && shared.critical_ignore_dnd) {
             let _ = shared.ui.send(UiCommand::Show(notification));
-            play_notification_sound();
+            play_notification_sound(app_name);
         }
         id
     }
@@ -164,9 +164,9 @@ impl NotifyIface {
     }
 }
 
-fn play_notification_sound() {
+fn play_notification_sound(app: &str) {
     let _ = std::process::Command::new("nirux")
-        .args(["sounds", "play", "notification"])
+        .args(["sounds", "play", "notification", "--app", app])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
