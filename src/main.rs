@@ -67,6 +67,7 @@ struct Shared {
     dnd: bool,
     critical_ignore_dnd: bool,
     ui: Sender<UiCommand>,
+    sound: Sender<String>,
 }
 
 struct NotifyIface {
@@ -139,7 +140,7 @@ impl NotifyIface {
         }
         if !shared.dnd || (urgency == 2 && shared.critical_ignore_dnd) {
             let _ = shared.ui.send(UiCommand::Show(notification));
-            play_notification_sound(app_name);
+            play_notification_sound(&shared.sound, app_name);
         }
         id
     }
@@ -164,13 +165,50 @@ impl NotifyIface {
     }
 }
 
-fn play_notification_sound(app: &str) {
-    let _ = std::process::Command::new("nirux")
-        .args(["sounds", "play", "notification", "--app", app])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+/// One worker owns every notification sound. It coalesces bursts, then spawns
+/// `nirux` and waits for it, so a notification can never leave a zombie behind.
+const SOUND_COALESCE: Duration = Duration::from_millis(200);
+
+fn start_sound_worker() -> Sender<String> {
+    let (tx, rx) = mpsc::channel::<String>();
+    let _ = thread::Builder::new()
+        .name("nirunotify-sound".into())
+        .spawn(move || sound_worker(rx));
+    tx
+}
+
+fn sound_worker(rx: Receiver<String>) {
+    let mut last: Option<Instant> = None;
+    while let Ok(mut app) = rx.recv() {
+        // A notification burst is one audible event; keep only the newest app
+        // filter instead of starting one process and audio stream per item.
+        while let Ok(next) = rx.try_recv() {
+            app = next;
+        }
+        if let Some(at) = last {
+            let wait = SOUND_COALESCE.saturating_sub(at.elapsed());
+            if !wait.is_zero() {
+                thread::sleep(wait);
+                while let Ok(next) = rx.try_recv() {
+                    app = next;
+                }
+            }
+        }
+        if let Ok(mut child) = std::process::Command::new("nirux")
+            .args(["sounds", "play", "notification", "--app", &app])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            let _ = child.wait();
+        }
+        last = Some(Instant::now());
+    }
+}
+
+fn play_notification_sound(sound: &Sender<String>, app: &str) {
+    let _ = sound.send(app.to_string());
 }
 
 fn truncate(text: &str, max: usize) -> String {
@@ -1219,6 +1257,7 @@ fn daemon() -> Result<()> {
         dnd: false,
         critical_ignore_dnd: cfg.critical_ignore_dnd,
         ui: ui_tx,
+        sound: start_sound_worker(),
     }));
     let iface = NotifyIface {
         shared: shared.clone(),

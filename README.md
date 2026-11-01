@@ -19,6 +19,8 @@ the fallback.
 - Suppression while `_NIRU_LOCK_READY` names a live lock window.
 - DND/history controls over a documented Unix-socket CLI.
 - Coalesced hardware OSD, for example `nirunotify --osd volume 45`.
+- Notification sounds through one coalescing worker that reaps its child, so
+  notification bursts cannot stack audio or leave zombie processes.
 - Bounded live/replacement maps, 100-entry history and a 100-command queue.
 
 No markup or images; the advertised capabilities are `body` and `actions`.
