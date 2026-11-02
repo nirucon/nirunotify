@@ -159,6 +159,42 @@ done
 kill "$MON" 2>/dev/null || :
 grep -q 'ActionInvoked' "$T/action.log" || { cat "$T/action.log"; echo "FAIL ActionInvoked signal"; exit 1; }
 grep -q 'default' "$T/action.log" || { cat "$T/action.log"; echo "FAIL action key"; exit 1; }
+# DND must still expire notifications, otherwise a --wait client hangs forever
+# waiting for a NotificationClosed that no popup will ever produce.
+"$BIN" --dnd on >/dev/null
+notify-send --wait -a QuietWait -t 500 "Quiet wait" "expires" &
+QCLIENT=$!
+i=0
+while kill -0 "$QCLIENT" 2>/dev/null; do
+  i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL DND notification never closed"; exit 1; }
+  sleep 0.05
+done
+"$BIN" --dnd off >/dev/null
+
+# A notification displaced by max_visible must also close its client.
+printf 'width = 500\nmax_visible = 1\n' > "$XDG_CONFIG_HOME/nirunotify/config.toml"
+xprop -root -f _NIRU_CONFIG_SERIAL 32c -set _NIRU_CONFIG_SERIAL 43
+sleep 0.3
+notify-send --wait -a First -t 6000 "First visible" "body" &
+FIRST=$!
+i=0
+while [ "$(count)" -lt 1 ]; do
+  i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL first visible notification"; exit 1; }
+  sleep 0.05
+done
+notify-send --wait -a Second -t 800 "Second visible" "body" &
+SECOND=$!
+i=0
+while kill -0 "$FIRST" 2>/dev/null; do
+  i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL displaced notification client never closed"; exit 1; }
+  sleep 0.05
+done
+i=0
+while kill -0 "$SECOND" 2>/dev/null; do
+  i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL second notification client never closed"; exit 1; }
+  sleep 0.05
+done
+
 # Lock privacy: publish a viewable lock-ready window, send, expect suppression.
 xmessage -title lock-test -buttons OK -center lock-test >/dev/null 2>&1 &
 XMESSAGE=$!

@@ -49,6 +49,7 @@ struct Notification {
 #[derive(Clone)]
 enum UiCommand {
     Show(Notification),
+    Silent(Notification),
     Close(u32),
     CloseClient(u32),
     Osd { channel: String, text: String },
@@ -141,6 +142,11 @@ impl NotifyIface {
         if !shared.dnd || (urgency == 2 && shared.critical_ignore_dnd) {
             let _ = shared.ui.send(UiCommand::Show(notification));
             play_notification_sound(&shared.sound, app_name);
+        } else {
+            // DND hides the popup, but the notification still needs a bounded
+            // lifetime so the client receives NotificationClosed instead of
+            // waiting forever for a window that will never appear.
+            let _ = shared.ui.send(UiCommand::Silent(notification));
         }
         id
     }
@@ -515,6 +521,7 @@ struct Ui {
     rx: Receiver<UiCommand>,
     events: Sender<UiEvent>,
     popups: Vec<Popup>,
+    silent: Vec<(u32, Instant)>,
     osd: Option<Popup>,
     locked: bool,
     pending: Vec<UiCommand>,
@@ -565,6 +572,7 @@ impl Ui {
             rx,
             events,
             popups: Vec::new(),
+            silent: Vec::new(),
             osd: None,
             locked: false,
             pending: Vec::new(),
@@ -943,8 +951,13 @@ impl Ui {
             self.popups.push(popup);
         }
         while self.popups.len() > self.cfg.max_visible {
-            if let Some(old) = self.popups.pop() {
-                old.destroy(&self.c);
+            let Some(old) = self.popups.pop() else {
+                break;
+            };
+            let id = old.id;
+            old.destroy(&self.c);
+            if let Some(id) = id {
+                self.close(id, 4, true)?;
             }
         }
         for index in 0..self.popups.len() {
@@ -972,11 +985,8 @@ impl Ui {
         self.draw_osd(popup)
     }
 
-    fn show(&mut self, notification: Notification) -> Result<()> {
-        // The bar may map after the notifier starts. Re-read its strut so a
-        // notification never starts flush against a newly started bar.
-        self.refresh_reserved();
-        let timeout = if notification.timeout_ms == u64::MAX {
+    fn timeout_for(&self, notification: &Notification) -> u64 {
+        if notification.timeout_ms == u64::MAX {
             if notification.urgency == 2 {
                 self.cfg.critical_timeout_ms
             } else {
@@ -986,7 +996,23 @@ impl Ui {
             self.cfg.max_timeout_ms
         } else {
             notification.timeout_ms.min(self.cfg.max_timeout_ms)
-        };
+        }
+    }
+
+    fn silence(&mut self, notification: Notification) {
+        let timeout = self.timeout_for(&notification);
+        let id = notification.id;
+        self.silent.retain(|(other, _)| *other != id);
+        self.silent
+            .push((id, Instant::now() + Duration::from_millis(timeout)));
+    }
+
+    fn show(&mut self, notification: Notification) -> Result<()> {
+        // The bar may map after the notifier starts. Re-read its strut so a
+        // notification never starts flush against a newly started bar.
+        self.refresh_reserved();
+        let timeout = self.timeout_for(&notification);
+        self.silent.retain(|(id, _)| *id != notification.id);
         if let Some(index) = self
             .popups
             .iter()
@@ -1007,8 +1033,13 @@ impl Ui {
         popup.expires = Instant::now() + Duration::from_millis(timeout);
         self.popups.insert(0, popup);
         while self.popups.len() > self.cfg.max_visible {
-            if let Some(old) = self.popups.pop() {
-                old.destroy(&self.c);
+            let Some(old) = self.popups.pop() else {
+                break;
+            };
+            let id = old.id;
+            old.destroy(&self.c);
+            if let Some(id) = id {
+                self.close(id, 4, true)?;
             }
         }
         for i in 0..self.popups.len() {
@@ -1064,6 +1095,7 @@ impl Ui {
     }
 
     fn close(&mut self, id: u32, reason: u32, notify: bool) -> Result<()> {
+        self.silent.retain(|(silent, _)| *silent != id);
         if let Some(index) = self.popups.iter().position(|p| p.id == Some(id)) {
             let popup = self.popups.remove(index);
             popup.destroy(&self.c);
@@ -1086,6 +1118,15 @@ impl Ui {
         for id in expired {
             self.close(id, 1, true)?;
         }
+        let silent: Vec<u32> = self
+            .silent
+            .iter()
+            .filter(|(_, expires)| now >= *expires)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in silent {
+            self.close(id, 1, true)?;
+        }
         if self.osd.as_ref().is_some_and(|p| now >= p.expires) {
             if let Some(p) = self.osd.take() {
                 p.destroy(&self.c);
@@ -1097,6 +1138,10 @@ impl Ui {
     fn handle_command(&mut self, command: UiCommand) -> Result<()> {
         match command {
             UiCommand::Show(n) => self.show(n),
+            UiCommand::Silent(n) => {
+                self.silence(n);
+                Ok(())
+            }
             UiCommand::Close(id) => self.close(id, 2, true),
             UiCommand::CloseClient(id) => self.close(id, 0, false),
             UiCommand::Osd { channel, text } => self.osd(&channel, &text),
@@ -1104,8 +1149,12 @@ impl Ui {
     }
 
     fn hide_for_lock(&mut self) -> Result<()> {
-        for p in self.popups.drain(..) {
-            p.destroy(&self.c);
+        for popup in self.popups.drain(..) {
+            let id = popup.id;
+            popup.destroy(&self.c);
+            if let Some(id) = id {
+                let _ = self.events.send(UiEvent::Closed { id, reason: 4 });
+            }
         }
         if let Some(p) = self.osd.take() {
             p.destroy(&self.c);
