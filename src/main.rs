@@ -1163,17 +1163,29 @@ impl Ui {
         Ok(())
     }
 
+    fn accept_command(&mut self, command: UiCommand) -> Result<()> {
+        // A command can wake the channel immediately after the screen locked,
+        // before the periodic lock check runs. Never show it over the lock.
+        if !self.locked && self.lock_established() {
+            self.locked = true;
+            self.last_lock_check = Instant::now();
+            self.hide_for_lock()?;
+        }
+        if self.locked {
+            if self.pending.len() >= 100 {
+                self.pending.remove(0);
+            }
+            self.pending.push(command);
+            Ok(())
+        } else {
+            self.handle_command(command)
+        }
+    }
+
     fn run(&mut self) -> Result<()> {
         loop {
             while let Ok(command) = self.rx.try_recv() {
-                if self.locked {
-                    if self.pending.len() >= 100 {
-                        self.pending.remove(0);
-                    }
-                    self.pending.push(command);
-                } else {
-                    self.handle_command(command)?;
-                }
+                self.accept_command(command)?;
             }
             let mut handled = false;
             while let Some(event) = self.c.poll_for_event()? {
@@ -1258,7 +1270,24 @@ impl Ui {
                 }
             }
             if !handled {
-                thread::sleep(Duration::from_millis(25));
+                // The command channel wakes immediately for new notifications
+                // and OSDs. When nothing is displayed there is no need to poll
+                // X forty times per second: keep the existing 250 ms lock check
+                // cadence. Visible/expiring windows retain the short X event
+                // and expiry cadence for clicks, stacking and close deadlines.
+                let wait = if self.popups.is_empty() && self.osd.is_none() && self.silent.is_empty()
+                {
+                    Duration::from_millis(250)
+                } else {
+                    Duration::from_millis(25)
+                };
+                match self.rx.recv_timeout(wait) {
+                    Ok(command) => self.accept_command(command)?,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err("notification command channel closed".into());
+                    }
+                }
             }
         }
     }
