@@ -137,8 +137,19 @@ done
 dbus-monitor --session "type='signal',interface='org.freedesktop.Notifications',member='ActionInvoked'" >"$T/action.log" 2>&1 &
 MON=$!
 sleep 0.2
-notify-send --wait -a Action -A default=Open -t 6000 "Action test" "body" &
-CLIENT=$!
+# gdbus sends the actions as given. notify-send 0.8.8 on the Ubuntu 26.04
+# runners decides that no server supports actions (GetCapabilities does list
+# them) and then waits forever, so it is only the fallback here.
+CLIENT=
+if command -v gdbus >/dev/null 2>&1; then
+  gdbus call --session --dest org.freedesktop.Notifications \
+    --object-path /org/freedesktop/Notifications \
+    --method org.freedesktop.Notifications.Notify \
+    Action 0 '' 'Action test' body "['default', 'Open']" '{}' 6000 >/dev/null
+else
+  notify-send --wait -a Action -A default=Open -t 6000 "Action test" "body" &
+  CLIENT=$!
+fi
 i=0
 while [ "$(count)" -lt 1 ]; do
   i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL action notification did not map"; exit 1; }
@@ -152,8 +163,13 @@ while [ "$(count)" -ne 0 ]; do
   sleep 0.05
 done
 i=0
-while kill -0 "$CLIENT" 2>/dev/null; do
+while [ -n "$CLIENT" ] && kill -0 "$CLIENT" 2>/dev/null; do
   i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL action client did not finish"; exit 1; }
+  sleep 0.05
+done
+i=0
+until grep -q 'ActionInvoked' "$T/action.log"; do
+  i=$((i + 1)); [ "$i" -gt 100 ] && break
   sleep 0.05
 done
 kill "$MON" 2>/dev/null || :
