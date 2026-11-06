@@ -1,0 +1,70 @@
+[sounds]
+enabled = true
+volume = 35
+startup = true
+notification = true
+update = true
+shutdown = true
+notification_cooldown_ms = 2500
+notification_exclude_apps = ["nplay", "spotify"]
+respect_mute = true
+
+# System sounds. startup, update and shutdown are switched in [sounds] above.
+[sounds.system]
+enabled = true
+auth-fail = true
+lock = false
+unlock = false
+
+# Notification sounds (the notification key in [sounds] above and the app
+# sounds in [sounds.apps]). Do Not Disturb silences these and nothing else.
+[sounds.notifications]
+enabled = true
+
+# Feedback for keys you press. Volume ticks play on the new level, so you
+# hear how loud it is; holding a key plays at most one tick per rate_limit_ms.
+[sounds.feedback]
+enabled = true
+volume-up = true
+volume-down = true
+volume-limit = true
+mute = true
+unmute = true
+brightness-up = false
+brightness-down = false
+screenshot = true
+rate_limit_ms = 80
+
+# Charger and battery. battery-low and battery-critical sound once per
+# discharge when the battery falls to the given percentage.
+[sounds.power]
+enabled = true
+power-plug = true
+power-unplug = true
+battery-low = true
+battery-critical = true
+battery-full = false
+battery_low_percent = 20
+battery_critical_percent = 5
+battery_full_percent = 100
+
+# Devices that come and go: USB, audio devices, monitors and, if you want,
+# Bluetooth links. A burst (a dock) is one sound per debounce_ms.
+[sounds.devices]
+enabled = true
+device-connect = true
+device-disconnect = true
+usb = true
+audio = true
+displays = true
+bluetooth = false
+debounce_ms = 1500
+
+# Per-app notification sounds. The key is the app name a notification is sent
+# with (see `nirunotify --history`), compared case-insensitively. The value is
+# a sound name, which plays NAME.ogg from ~/.config/nirux/sounds or the NIRUX
+# sounds; a file path (absolute or ~/...); "default" for the normal
+# notification sound; or "off" to keep the notification silent.
+[sounds.apps]
+thunderbird = "mail"
+signal = "chat"

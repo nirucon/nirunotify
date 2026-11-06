@@ -16,7 +16,8 @@ jobs:
           sudo apt-get update && sudo apt-get install -y dbus-x11 xvfb xdotool x11-utils x11-apps imagemagick libnotify-bin
           cargo build --release --locked
           sh tests/ui-smoke.sh target/release/nirunotify
+          sh tests/sounds-smoke.sh target/release/nirunotify
       - name: Shellcheck
         run: |
           docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable \
-            -S warning -s sh /src/install.sh /src/tests/ui-smoke.sh
+            -S warning -s sh /src/install.sh /src/tests/ui-smoke.sh /src/tests/sounds-smoke.sh

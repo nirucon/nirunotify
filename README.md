@@ -21,6 +21,10 @@ the fallback.
 - Coalesced hardware OSD, for example `nirunotify --osd volume 45`.
 - Notification sounds through one coalescing worker that reaps its child, so
   notification bursts cannot stack audio or leave zombie processes.
+- The NIRUX system sounds: volume, mute, brightness and screenshot feedback,
+  charger and battery, devices (USB, audio, monitors) and the lock screen.
+  Played natively, without a shell; charger and devices come from kernel
+  uevents, with no polling.
 - Bounded live/replacement maps, 100-entry history and a 100-command queue.
 
 No markup or images; the advertised capabilities are `body` and `actions`.
@@ -53,8 +57,39 @@ nirunotify --count
 nirunotify --dismiss ID
 nirunotify --clear
 nirunotify --osd volume 45
+nirunotify --osd volume 45% --sound volume-up 45
+nirunotify --sound auth-fail
 nirunotify --check-config
 ```
+
+## System sounds
+
+`nirunotify --sound EVENT [LEVEL] [muted|unmuted]` plays a NIRUX sound event
+(`volume-up`, `volume-down`, `volume-limit`, `mute`, `unmute`,
+`brightness-up`, `brightness-down`, `screenshot`, `power-plug`,
+`power-unplug`, `battery-low`, `battery-critical`, `battery-full`,
+`device-connect`, `device-disconnect`, `auth-fail`, `lock`, `unlock`, and
+the session events). `--osd … --sound …` shows the OSD and plays the sound in
+one call; `LEVEL` picks the volume tick for the new level, and `unmuted` saves
+a `wpctl` call when the caller knows the sink state. Other programs can send
+the same request as one line, `sound EVENT`, on the control socket.
+
+The settings are NIRUX's: `~/.config/nirux/sounds.toml`, managed with
+`nirux sounds`, reread when the file changes. The sound files are
+`~/.config/nirux/sounds/EVENT.ogg` (yours) or the NIRUX ones under
+`$NIRUX_PREFIX/share/nirux/sounds`. A held key plays at most one tick per
+`rate_limit_ms`; Do Not Disturb silences notification sounds only; a muted sink
+silences everything when `respect_mute` is on.
+
+Charger, battery and device events come from one thread that sleeps on a
+kernel uevent socket: the charger (`power_supply` Mains/USB `online`), the
+machine's batteries (`capacity`, `status`; peripherals with `scope = Device`
+are ignored), `usb` devices (not interfaces or root hubs), `sound` cards,
+`drm` connector status (monitors) and, when enabled, `bluetooth` links. A
+burst such as a dock is one sound, and the charger wins over its devices.
+`--check-config` prints what the watcher reads now, and
+`NIRUNOTIFY_DEBUG_SOUNDS=1` explains each decision on stderr. See
+[NIRUX sounds](https://github.com/nirucon/nirux/blob/main/docs/SOUNDS.md).
 
 The service exits with a clear error if another daemon owns the bus name; it
 never evicts an existing provider.
@@ -69,7 +104,11 @@ never evicts an existing provider.
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
-sh tests/ui-smoke.sh
+sh tests/ui-smoke.sh target/release/nirunotify
+sh tests/sounds-smoke.sh target/release/nirunotify
 ```
+
+`tests/fixtures/sounds-default.toml` is the `sounds.toml` a new NIRUX writes
+(`sounds.example.toml` in NIRUX); keep the two identical.
 
 MIT. Copyright 2026 Nicklas Rudolfsson.

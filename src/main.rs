@@ -7,6 +7,8 @@
 
 mod config;
 mod render;
+mod sounds;
+mod uevents;
 
 use config::{Config, Position};
 use render::Renderer;
@@ -69,6 +71,10 @@ struct Shared {
     critical_ignore_dnd: bool,
     ui: Sender<UiCommand>,
     sound: Sender<String>,
+    /// Feedback, power, device and lock-screen sounds, played natively.
+    feedback: Sender<sounds::Request>,
+    /// Injected test uevents (NIRUNOTIFY_TEST_UEVENTS=1 only).
+    test_uevents: Option<std::fs::File>,
 }
 
 struct NotifyIface {
@@ -308,7 +314,25 @@ fn control_server(shared: Arc<Mutex<Shared>>) {
         }
         let mut parts = line.trim().splitn(4, ' ');
         let command = parts.next().unwrap_or("");
+        let rest = line.trim().split_once(' ').map(|(_, r)| r).unwrap_or("");
         let reply = match command {
+            "sound" => match sounds::Request::parse(rest) {
+                Some(request) => {
+                    let _ = shared.lock().unwrap().feedback.send(request);
+                    "ok\n".into()
+                }
+                None => "sound needs a known EVENT [LEVEL] [muted|unmuted]\n".into(),
+            },
+            "uevent" => {
+                let mut state = shared.lock().unwrap();
+                match state.test_uevents.as_mut() {
+                    Some(pipe) => {
+                        let _ = pipe.write_all(format!("{rest}\n").as_bytes());
+                        "ok\n".into()
+                    }
+                    None => "uevent injection is off\n".into(),
+                }
+            }
             "dnd" => {
                 let action = parts.next().unwrap_or("status");
                 let mut state = shared.lock().unwrap();
@@ -375,7 +399,7 @@ fn control_server(shared: Arc<Mutex<Shared>>) {
                 let n = shared.lock().unwrap().notifications.len();
                 format!("{n}\n")
             }
-            _ => "commands: dnd, history, clear, dismiss ID, osd CHANNEL TEXT, visible\n".into(),
+            _ => "commands: dnd, history, clear, dismiss ID, osd CHANNEL TEXT, sound EVENT [LEVEL], visible\n".into(),
         };
         let _ = stream.write_all(reply.as_bytes());
     }
@@ -1324,8 +1348,45 @@ fn wrap(text: &str, width: usize, max_lines: usize) -> Vec<String> {
     lines
 }
 
+fn test_pipe() -> Option<(std::fs::File, std::fs::File)> {
+    use std::os::unix::io::FromRawFd;
+    let mut fds = [0 as libc::c_int; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return None;
+    }
+    Some(unsafe {
+        (
+            std::fs::File::from_raw_fd(fds[0]),
+            std::fs::File::from_raw_fd(fds[1]),
+        )
+    })
+}
+
+/// `EVENT [LEVEL] [muted|unmuted]` from the command line.
+fn sound_command(words: &[String]) -> Result<String> {
+    let line = words.join(" ");
+    if sounds::Request::parse(&line).is_none() {
+        let known: Vec<&str> = sounds::EVENTS.iter().map(|(e, _, _)| *e).collect();
+        return Err(format!(
+            "--sound needs EVENT [LEVEL] [muted|unmuted]; events: {}",
+            known.join(" ")
+        )
+        .into());
+    }
+    control(&format!("sound {line}"))
+}
+
 fn daemon() -> Result<()> {
     let cfg = Config::load()?;
+    let feedback = sounds::start();
+    // Tests feed uevents through a pipe instead of the kernel socket.
+    let (test_reader, test_writer) =
+        if std::env::var("NIRUNOTIFY_TEST_UEVENTS").as_deref() == Ok("1") {
+            test_pipe().map_or((None, None), |(r, w)| (Some(r), Some(w)))
+        } else {
+            (None, None)
+        };
+    uevents::start(feedback.clone(), test_reader);
     let (ui_tx, ui_rx) = mpsc::channel();
     let (event_tx, event_rx) = mpsc::channel();
     let shared = Arc::new(Mutex::new(Shared {
@@ -1336,6 +1397,8 @@ fn daemon() -> Result<()> {
         critical_ignore_dnd: cfg.critical_ignore_dnd,
         ui: ui_tx,
         sound: start_sound_worker(),
+        feedback,
+        test_uevents: test_writer,
     }));
     let iface = NotifyIface {
         shared: shared.clone(),
@@ -1368,7 +1431,10 @@ fn main() {
             println!("NIRUNOTIFY {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        "--check-config" => Config::load().map(|c| println!("{}", c.describe())),
+        "--check-config" => Config::load().map(|c| {
+            println!("{}", c.describe());
+            println!("{}", uevents::describe());
+        }),
         "--dnd" => {
             let action = args.get(1).map(String::as_str).unwrap_or("status");
             control(&format!("dnd {action}")).map(|r| print!("{r}"))
@@ -1380,20 +1446,42 @@ fn main() {
             Some(id) => control(&format!("dismiss {id}")).map(|r| print!("{r}")),
             None => Err("--dismiss needs an id".into()),
         },
+        // `--osd CHANNEL TEXT… [--sound EVENT [LEVEL] [muted|unmuted]]`: one
+        // process shows the OSD and plays the matching feedback sound.
         "--osd" => match args.get(1) {
             Some(channel) => {
-                let text = args[2..].join(" ");
-                control(&format!("osd {channel} {text}")).map(|r| print!("{r}"))
+                let rest = &args[2..];
+                let split = rest
+                    .iter()
+                    .position(|a| a == "--sound")
+                    .unwrap_or(rest.len());
+                let text = rest[..split].join(" ");
+                control(&format!("osd {channel} {text}")).and_then(|r| {
+                    if split < rest.len() {
+                        sound_command(&rest[split + 1..])?;
+                    }
+                    print!("{r}");
+                    Ok(())
+                })
             }
             None => Err("--osd needs CHANNEL TEXT".into()),
         },
+        "--sound" => sound_command(&args[1..]).map(|r| print!("{r}")),
+        // For tests only: the daemon accepts it with NIRUNOTIFY_TEST_UEVENTS=1.
+        "--test-uevent" => control(&format!("uevent {}", args[1..].join(" "))).and_then(|r| {
+            if r.starts_with("ok") {
+                Ok(())
+            } else {
+                Err(r.trim().to_string().into())
+            }
+        }),
         "" => daemon(),
         "--help" => {
-            println!("Usage: nirunotify [--dnd on|off|toggle|status|--history|--count|--clear|--dismiss ID|--osd CHANNEL TEXT|--check-config|--version]");
+            println!("Usage: nirunotify [--dnd on|off|toggle|status|--history|--count|--clear|--dismiss ID|--osd CHANNEL TEXT [--sound EVENT [LEVEL]]|--sound EVENT [LEVEL]|--check-config|--version]");
             Ok(())
         }
         _ => {
-            eprintln!("Usage: nirunotify [--dnd on|off|toggle|status|--history|--count|--clear|--dismiss ID|--osd CHANNEL TEXT|--check-config|--version]");
+            eprintln!("Usage: nirunotify [--dnd on|off|toggle|status|--history|--count|--clear|--dismiss ID|--osd CHANNEL TEXT [--sound EVENT [LEVEL]]|--sound EVENT [LEVEL]|--check-config|--version]");
             std::process::exit(2);
         }
     };

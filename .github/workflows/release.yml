@@ -29,6 +29,7 @@ jobs:
             exit 1
           fi
           sh tests/ui-smoke.sh target/x86_64-unknown-linux-musl/release/nirunotify
+          sh tests/sounds-smoke.sh target/x86_64-unknown-linux-musl/release/nirunotify
       - name: Collect assets
         run: |
           mkdir -p dist
