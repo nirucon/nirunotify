@@ -33,6 +33,30 @@ printf 'theme = "niru-noir"\n' > "$XDG_CONFIG_HOME/niruwm/config.toml"
 count() {
   xdotool search --class NIRUNOTIFY 2>/dev/null | wc -l | tr -d ' '
 }
+# `notify-send --wait APP TIMEOUT SUMMARY`: send, then return once the
+# server emits NotificationClosed for this notification. notify-send 0.8.8 on
+# the Ubuntu 26.04 runners never returns from --wait, so gdbus is used where
+# it exists and notify-send stays the fallback.
+wait_client() {
+  if ! command -v gdbus >/dev/null 2>&1; then
+    notify-send --wait -a "$1" -t "$2" "$3" body
+    return
+  fi
+  log=$(mktemp "$T/closed.XXXXXX")
+  dbus-monitor --session "type='signal',interface='org.freedesktop.Notifications',member='NotificationClosed'" >"$log" 2>&1 &
+  mon=$!
+  sleep 0.2
+  id=$(gdbus call --session --dest org.freedesktop.Notifications \
+    --object-path /org/freedesktop/Notifications \
+    --method org.freedesktop.Notifications.Notify \
+    "$1" 0 '' "$3" body '[]' '{}' "$2" | sed 's/.*uint32 \([0-9]*\).*/\1/')
+  n=0
+  until grep -A1 'member=NotificationClosed' "$log" | grep -q "uint32 $id\$"; do
+    n=$((n + 1)); [ "$n" -gt 400 ] && break
+    sleep 0.05
+  done
+  kill "$mon" 2>/dev/null || :
+}
 "$BIN" >"$T/daemon.log" 2>&1 &
 DAEMON=$!
 lock_cleanup() { kill "$DAEMON" 2>/dev/null || :; }
@@ -178,7 +202,7 @@ grep -q 'default' "$T/action.log" || { cat "$T/action.log"; echo "FAIL action ke
 # DND must still expire notifications, otherwise a --wait client hangs forever
 # waiting for a NotificationClosed that no popup will ever produce.
 "$BIN" --dnd on >/dev/null
-notify-send --wait -a QuietWait -t 500 "Quiet wait" "expires" &
+wait_client QuietWait 500 "Quiet wait" &
 QCLIENT=$!
 i=0
 while kill -0 "$QCLIENT" 2>/dev/null; do
@@ -191,14 +215,14 @@ done
 printf 'width = 500\nmax_visible = 1\n' > "$XDG_CONFIG_HOME/nirunotify/config.toml"
 xprop -root -f _NIRU_CONFIG_SERIAL 32c -set _NIRU_CONFIG_SERIAL 43
 sleep 0.3
-notify-send --wait -a First -t 6000 "First visible" "body" &
+wait_client First 6000 "First visible" &
 FIRST=$!
 i=0
 while [ "$(count)" -lt 1 ]; do
   i=$((i + 1)); [ "$i" -gt 100 ] && { echo "FAIL first visible notification"; exit 1; }
   sleep 0.05
 done
-notify-send --wait -a Second -t 800 "Second visible" "body" &
+wait_client Second 800 "Second visible" &
 SECOND=$!
 i=0
 while kill -0 "$FIRST" 2>/dev/null; do
