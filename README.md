@@ -87,7 +87,7 @@ nirunotify --version
 `volume-up`, `volume-down`, `volume-limit`, `mute`, `unmute`, `brightness-up`,
 `brightness-down`, `screenshot`, `power-plug`, `power-unplug`, `battery-low`,
 `battery-critical`, `battery-full`, `device-connect`, `device-disconnect`,
-`auth-fail`, `lock`, `unlock` and the session events. `--osd … --sound …`
+`auth-fail`, `lock`, `unlock` and the session events. `--osd ... --sound ...`
 shows the OSD and plays the sound in one call; `LEVEL` picks the volume tick
 for the new level, and `unmuted` saves a `wpctl` call when the caller already
 knows the sink state. Other programs can send the same request as one line,
@@ -107,6 +107,11 @@ machine's batteries (`capacity`, `status`; peripherals with `scope = Device`
 are ignored), `usb` devices (not interfaces or root hubs), `sound` cards, `drm`
 connector status (monitors) and, when enabled, `bluetooth` links. A burst such
 as plugging in a dock is one sound, and the charger wins over its devices.
+
+The sound for a notification is played by `nirux sounds play notification
+--app APP`, one at a time with bursts coalesced, so the per-app sounds set with
+`nirux sounds app` and `notification_exclude_apps` apply. In NIRUX, `nirux manual
+notifications` and `nirux manual event sounds` describe the whole setup.
 
 ## Configuration
 
