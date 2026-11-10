@@ -24,11 +24,16 @@ an existing one; NIRUWM falls back to Dunst when NIRUNOTIFY is not installed.
   markup or images).
 - Popups follow the active NIRUWM theme live, stay above ordinary windows
   without taking keyboard focus and keep clear of the bar.
-- Monitor selection from the pointer, the RandR primary or a named output.
+- Monitor selection per surface: the NIRUWM focused screen (default), the
+  pointer, the RandR primary or a named output. Follows hotplug and docking,
+  and keeps clear of the bar on that screen only.
 - Do Not Disturb, critical-timeout policy and memory-only history (100
   entries), controlled over a Unix-socket CLI.
 - Suppressed while NIRULOCK's `_NIRU_LOCK_READY` names a live lock window.
-- Coalesced hardware OSD, for example `nirunotify --osd volume 45`.
+- Hardware OSD for volume and brightness: label, icon, the value and a level
+  bar in the theme accent that glides to the new level. A held key reuses the
+  same box, `Muted` keeps the last level greyed out and a press against 0 %
+  or 100 % lights the bar briefly. For example `nirunotify --osd volume 45%`.
 - NIRUX system sounds played natively, without a shell: volume, mute,
   brightness, screenshot, charger, battery, devices (USB, audio, monitors,
   optionally Bluetooth) and lock. Charger and device events come from kernel
@@ -129,7 +134,7 @@ from the shared NIRUWM appearance unless set here.
 | `max_timeout_ms` | `60000` | Upper bound for any timeout, including a persistent 0 |
 | `critical_timeout_ms` | `30000` | Timeout for urgent notifications |
 | `critical_ignore_dnd` | `false` | Let urgent notifications through DND |
-| `monitor` | `""` | Empty = under the pointer, `primary`, or an output name |
+| `monitor` | `""` | Empty or `focused` = NIRUWM focused screen, `pointer`, `primary`, or an output name |
 | `position` | `top-right` | `top-right`, `top-left`, `bottom-right` or `bottom-left` |
 | `font_size`, `font_path` | `14.0`, unset | Font override |
 

@@ -38,7 +38,8 @@ pub struct Renderer {
     back: Pixmap,
     back_width: u16,
     pub height: u16,
-    masks: HashMap<char, Mask>,
+    /// Glyph masks per character and pixel size (f32 bits).
+    masks: HashMap<(char, u32), Mask>,
 }
 
 impl Renderer {
@@ -159,9 +160,65 @@ impl Renderer {
             if pen.saturating_add(self.advance) > clip {
                 break;
             }
-            let mask = self.mask(ch).clone();
+            let mask = self.mask(ch, self.size).clone();
             self.blend(c, gc, &mask, pen, baseline, colour, background)?;
             pen = pen.saturating_add(self.advance);
+        }
+        Ok(())
+    }
+
+    /// Advance of one character cell at another pixel size.
+    pub fn advance_at(&self, size: f32) -> i16 {
+        let scaled = self.font.as_scaled(PxScale::from(size));
+        scaled.h_advance(self.font.glyph_id('M')).ceil() as i16
+    }
+
+    /// Ascent (baseline offset from the top of a line) at a pixel size.
+    pub fn ascent_at(&self, size: f32) -> i16 {
+        self.font.as_scaled(PxScale::from(size)).ascent().ceil() as i16
+    }
+
+    /// Right edge of a glyph's ink from the pen, at a pixel size. Icons in
+    /// a proportional Nerd Font are wider than one cell, so spacing after an
+    /// icon uses this instead of the cell advance.
+    pub fn ink_width(&mut self, ch: char, size: f32) -> i16 {
+        let mask = self.mask(ch, size);
+        mask.x.saturating_add(mask.width as i16)
+    }
+
+    /// Whether the font has a real glyph for `ch` (id 0 is the blank box).
+    pub fn has_glyph(&self, ch: char) -> bool {
+        self.font.glyph_id(ch).0 != 0
+    }
+
+    /// Draw text at another pixel size than the renderer's own, e.g. the
+    /// large OSD value. Glyphs are cached per size, so a held key that only
+    /// changes a digit or two blends from the cache.
+    #[allow(clippy::too_many_arguments)]
+    pub fn line_at_size(
+        &mut self,
+        c: &RustConnection,
+        gc: Gcontext,
+        x: i16,
+        baseline: i16,
+        text: &str,
+        size: f32,
+        colour: u32,
+        background: u32,
+    ) -> crate::Result<()> {
+        let clip = i16::try_from(self.back_width).unwrap_or(i16::MAX);
+        let advance = self.advance_at(size);
+        let mut pen = x;
+        for ch in text.chars() {
+            if ch.is_control() {
+                continue;
+            }
+            if pen.saturating_add(advance) > clip {
+                break;
+            }
+            let mask = self.mask(ch, size).clone();
+            self.blend(c, gc, &mask, pen, baseline, colour, background)?;
+            pen = pen.saturating_add(advance);
         }
         Ok(())
     }
@@ -190,8 +247,9 @@ impl Renderer {
         Ok(())
     }
 
-    fn mask(&mut self, ch: char) -> &Mask {
-        if !self.masks.contains_key(&ch) {
+    fn mask(&mut self, ch: char, size: f32) -> &Mask {
+        let key = (ch, size.to_bits());
+        if !self.masks.contains_key(&key) {
             let mut out = Mask {
                 width: 0,
                 height: 0,
@@ -205,7 +263,7 @@ impl Renderer {
             // while `px_bounds` says where that corner sits relative to the
             // pen. Mixing the two double-applies the offset and clips every
             // glyph; they are kept strictly separate here.
-            let glyph = id.with_scale_and_position(self.size, point(0.0, 0.0));
+            let glyph = id.with_scale_and_position(size, point(0.0, 0.0));
             if let Some(outline) = self.font.outline_glyph(glyph) {
                 let bounds = outline.px_bounds();
                 let w = bounds.width().ceil() as u16;
@@ -229,9 +287,9 @@ impl Renderer {
                     };
                 }
             }
-            self.masks.insert(ch, out);
+            self.masks.insert(key, out);
         }
-        &self.masks[&ch]
+        &self.masks[&key]
     }
 
     /// Upload one glyph, blended against the background colour, to the

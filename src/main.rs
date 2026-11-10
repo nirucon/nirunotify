@@ -6,6 +6,7 @@
 //! content until it is established that the lock is gone.
 
 mod config;
+mod osd;
 mod render;
 mod sounds;
 mod uevents;
@@ -382,8 +383,9 @@ fn control_server(shared: Arc<Mutex<Shared>>) {
                 }
             }
             "osd" => {
-                let channel = parts.next().unwrap_or("").to_string();
-                let text = parts.next().unwrap_or("").to_string();
+                // `osd CHANNEL TEXT…`: the text may contain spaces.
+                let (channel, text) = rest.split_once(' ').unwrap_or((rest, ""));
+                let (channel, text) = (channel.trim().to_string(), text.trim().to_string());
                 if channel.is_empty() {
                     "osd needs CHANNEL TEXT\n".into()
                 } else {
@@ -405,16 +407,67 @@ fn control_server(shared: Arc<Mutex<Shared>>) {
     }
 }
 
-/// The monitor selected by config: pointer, RandR primary or a named output.
-fn monitor_area(c: &RustConnection, root: Window, choice: &str) -> (i16, i16, u16, u16) {
-    let setup = c.setup();
-    let screen = &setup.roots[0];
-    let fallback = (0, 0, screen.width_in_pixels, screen.height_in_pixels);
-    let Ok(resources) = c.randr_get_screen_resources_current(root) else {
-        return fallback;
-    };
-    let Ok(resources) = resources.reply() else {
-        return fallback;
+/// A monitor rectangle in root coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Area {
+    x: i16,
+    y: i16,
+    w: u16,
+    h: u16,
+}
+
+impl Area {
+    fn contains(&self, px: i16, py: i16) -> bool {
+        i32::from(px) >= i32::from(self.x)
+            && i32::from(px) < i32::from(self.x) + i32::from(self.w)
+            && i32::from(py) >= i32::from(self.y)
+            && i32::from(py) < i32::from(self.y) + i32::from(self.h)
+    }
+}
+
+/// Active monitors as (name, area, is primary).
+///
+/// RandR 1.5 monitors come first: they are what the server presents as
+/// screens (and what test servers can define). Older servers fall back to
+/// connected outputs with an active CRTC.
+fn outputs(c: &RustConnection, root: Window) -> Vec<(String, Area, bool)> {
+    let monitors = c
+        .randr_get_monitors(root, true)
+        .ok()
+        .and_then(|r| r.reply().ok())
+        .map(|r| r.monitors)
+        .unwrap_or_default();
+    let mut out: Vec<(String, Area, bool)> = monitors
+        .iter()
+        .filter(|m| m.width > 0 && m.height > 0)
+        .map(|m| {
+            let name = c
+                .get_atom_name(m.name)
+                .ok()
+                .and_then(|r| r.reply().ok())
+                .map(|r| String::from_utf8_lossy(&r.name).to_string())
+                .unwrap_or_default();
+            (
+                name,
+                Area {
+                    x: m.x,
+                    y: m.y,
+                    w: m.width,
+                    h: m.height,
+                },
+                m.primary,
+            )
+        })
+        .collect();
+    if !out.is_empty() {
+        return out;
+    }
+    let Some(resources) = c
+        .randr_get_screen_resources_current(root)
+        .ok()
+        .and_then(|r| r.reply().ok())
+    else {
+        return out;
     };
     let primary = c
         .randr_get_output_primary(root)
@@ -422,88 +475,208 @@ fn monitor_area(c: &RustConnection, root: Window, choice: &str) -> (i16, i16, u1
         .and_then(|r| r.reply().ok())
         .map(|r| r.output)
         .unwrap_or(0);
-    let (px, py) = c
-        .query_pointer(root)
-        .ok()
-        .and_then(|r| r.reply().ok())
-        .map(|r| (r.root_x, r.root_y))
-        .unwrap_or((-1, -1));
-    let mut pointer_hit = None;
     for output in resources.outputs {
-        let Ok(info) = c.randr_get_output_info(output, resources.config_timestamp) else {
+        let Some(info) = c
+            .randr_get_output_info(output, resources.config_timestamp)
+            .ok()
+            .and_then(|r| r.reply().ok())
+        else {
             continue;
         };
-        let Ok(info) = info.reply() else { continue };
         if info.connection != x11rb::protocol::randr::Connection::CONNECTED || info.crtc == 0 {
             continue;
         }
-        let Ok(crtc) = c.randr_get_crtc_info(info.crtc, resources.config_timestamp) else {
+        let Some(crtc) = c
+            .randr_get_crtc_info(info.crtc, resources.config_timestamp)
+            .ok()
+            .and_then(|r| r.reply().ok())
+        else {
             continue;
         };
-        let Ok(crtc) = crtc.reply() else { continue };
         if crtc.width == 0 || crtc.height == 0 {
             continue;
         }
-        let name = String::from_utf8_lossy(&info.name).to_string();
-        let rect = (crtc.x, crtc.y, crtc.width, crtc.height);
-        if !choice.is_empty() && choice != "primary" && name == choice {
-            return rect;
-        }
-        if choice == "primary" && output == primary {
-            return rect;
-        }
-        if px >= crtc.x
-            && px < crtc.x + crtc.width as i16
-            && py >= crtc.y
-            && py < crtc.y + crtc.height as i16
-        {
-            pointer_hit = Some(rect);
-        }
+        out.push((
+            String::from_utf8_lossy(&info.name).to_string(),
+            Area {
+                x: crtc.x,
+                y: crtc.y,
+                w: crtc.width,
+                h: crtc.height,
+            },
+            output == primary,
+        ));
     }
-    pointer_hit.unwrap_or(fallback)
+    out
 }
 
-/// Space reserved by docks (the bar) at the top and bottom of the root.
+/// The output NIRUWM has focused, from its published monitor table.
 ///
-/// The bar publishes `_NET_WM_STRUT_PARTIAL`; notifications start below it so
-/// they never sit flush against the bar. Both strut properties are accepted
-/// for panels that only publish the old four-value form.
-fn reserved_edges(c: &RustConnection, root: Window) -> (u16, u16) {
-    let Ok(tree) = c.query_tree(root) else {
-        return (0, 0);
-    };
-    let Ok(tree) = tree.reply() else {
-        return (0, 0);
-    };
-    let partial = c
-        .intern_atom(false, b"_NET_WM_STRUT_PARTIAL")
+/// `_NIRUWM_MONITORS` lists one line per screen: name, x, y, width, first
+/// global workspace, workspace count, active workspace and layout.
+/// `_NET_CURRENT_DESKTOP` is the global index of the focused workspace, so
+/// the focused screen is the one whose workspace range contains it. Returns
+/// the name and the published origin.
+fn focused_in_table(table: &str, current: u32) -> Option<(String, i16, i16)> {
+    for line in table.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 6 {
+            continue;
+        }
+        let (Ok(x), Ok(y), Ok(start), Ok(count)) = (
+            f[1].parse::<i16>(),
+            f[2].parse::<i16>(),
+            f[4].parse::<u32>(),
+            f[5].parse::<u32>(),
+        ) else {
+            continue;
+        };
+        if current >= start && current < start.saturating_add(count.max(1)) {
+            return Some((f[0].to_string(), x, y));
+        }
+    }
+    None
+}
+
+fn intern(c: &RustConnection, name: &[u8]) -> Option<Atom> {
+    c.intern_atom(false, name)
         .ok()
         .and_then(|r| r.reply().ok())
-        .map(|r| r.atom);
-    let basic = c
-        .intern_atom(false, b"_NET_WM_STRUT")
-        .ok()
-        .and_then(|r| r.reply().ok())
-        .map(|r| r.atom);
+        .map(|r| r.atom)
+}
+
+fn focused_output(c: &RustConnection, root: Window) -> Option<(String, i16, i16)> {
+    let monitors = intern(c, b"_NIRUWM_MONITORS")?;
+    let current = intern(c, b"_NET_CURRENT_DESKTOP")?;
+    let table = c
+        .get_property(false, root, monitors, AtomEnum::ANY, 0, 4096)
+        .ok()?
+        .reply()
+        .ok()?;
+    let table = String::from_utf8_lossy(&table.value).to_string();
+    let current = c
+        .get_property(false, root, current, AtomEnum::CARDINAL, 0, 1)
+        .ok()?
+        .reply()
+        .ok()?
+        .value32()?
+        .next()?;
+    focused_in_table(&table, current)
+}
+
+/// Pick the monitor for the next surface.
+///
+/// `""`/`"focused"` follows the NIRUWM focused screen, which is where the
+/// user is working even when the pointer rests on another screen; without a
+/// NIRUWM table it falls back to the pointer, then the RandR primary.
+/// `"pointer"`, `"primary"` or an output name select explicitly. The choice
+/// is made again for every surface, so it follows focus, hotplug and docking.
+fn monitor_area(c: &RustConnection, root: Window, choice: &str) -> Area {
+    let screen = &c.setup().roots[0];
+    let fallback = Area {
+        x: 0,
+        y: 0,
+        w: screen.width_in_pixels,
+        h: screen.height_in_pixels,
+    };
+    let outs = outputs(c, root);
+    if outs.is_empty() {
+        return fallback;
+    }
+    let pointer = || {
+        let (px, py) = c
+            .query_pointer(root)
+            .ok()
+            .and_then(|r| r.reply().ok())
+            .map(|r| (r.root_x, r.root_y))?;
+        outs.iter()
+            .find(|(_, a, _)| a.contains(px, py))
+            .map(|(_, a, _)| *a)
+    };
+    let primary = || outs.iter().find(|(_, _, p)| *p).map(|(_, a, _)| *a);
+    let named = |name: &str| outs.iter().find(|(n, _, _)| n == name).map(|(_, a, _)| *a);
+    let chosen = match choice {
+        "" | "focused" => focused_output(c, root)
+            .and_then(|(name, x, y)| {
+                named(&name).or_else(|| {
+                    outs.iter()
+                        .find(|(_, a, _)| a.x == x && a.y == y)
+                        .map(|(_, a, _)| *a)
+                })
+            })
+            .or_else(pointer),
+        "pointer" => pointer(),
+        "primary" => primary(),
+        name => named(name),
+    };
+    chosen
+        .or_else(primary)
+        .or_else(|| outs.first().map(|(_, a, _)| *a))
+        .unwrap_or(fallback)
+}
+
+/// Space a dock (the bar) takes at the top and bottom of one monitor.
+///
+/// Struts are relative to the root edges, so with screens stacked vertically
+/// the lower screen's bar says nothing useful about either screen. The dock
+/// windows' own geometry does: a mapped dock inside the monitor reserves the
+/// band from the monitor edge it sits nearest to.
+fn reserved_edges(c: &RustConnection, root: Window, area: Area) -> (u16, u16) {
+    let Some(tree) = c.query_tree(root).ok().and_then(|t| t.reply().ok()) else {
+        return (0, 0);
+    };
+    let atoms: Vec<Atom> = [&b"_NET_WM_STRUT_PARTIAL"[..], &b"_NET_WM_STRUT"[..]]
+        .into_iter()
+        .filter_map(|name| intern(c, name))
+        .collect();
     let mut top = 0u16;
     let mut bottom = 0u16;
     for window in tree.children {
-        for atom in [partial, basic].into_iter().flatten() {
-            let Ok(cookie) = c.get_property(false, window, atom, AtomEnum::CARDINAL, 0, 12) else {
-                continue;
-            };
-            let Ok(reply) = cookie.reply() else { continue };
-            let Some(values) = reply.value32() else {
-                continue;
-            };
-            let values: Vec<u32> = values.collect();
-            if values.len() >= 4 {
-                top = top.max(values[2].min(u32::from(u16::MAX)) as u16);
-                bottom = bottom.max(values[3].min(u32::from(u16::MAX)) as u16);
-            }
+        let has_strut = atoms.iter().any(|&atom| {
+            c.get_property(false, window, atom, AtomEnum::CARDINAL, 0, 12)
+                .ok()
+                .and_then(|r| r.reply().ok())
+                .and_then(|r| r.value32().map(|v| v.take(4).any(|n| n > 0)))
+                .unwrap_or(false)
+        });
+        if !has_strut {
+            continue;
+        }
+        let viewable = c
+            .get_window_attributes(window)
+            .ok()
+            .and_then(|r| r.reply().ok())
+            .is_some_and(|a| a.map_state == MapState::VIEWABLE);
+        let Some(g) = c.get_geometry(window).ok().and_then(|r| r.reply().ok()) else {
+            continue;
+        };
+        if let Some((t, b)) = dock_band(area, viewable, g.x, g.y, g.width, g.height) {
+            top = top.max(t);
+            bottom = bottom.max(b);
         }
     }
     (top, bottom)
+}
+
+/// The (top, bottom) band one dock window reserves on a monitor, if any.
+fn dock_band(area: Area, viewable: bool, x: i16, y: i16, w: u16, h: u16) -> Option<(u16, u16)> {
+    if !viewable || w == 0 || h == 0 || h >= area.h / 2 {
+        return None;
+    }
+    let cx = i32::from(x) + i32::from(w) / 2;
+    let cy = i32::from(y) + i32::from(h) / 2;
+    let (ax, ay) = (i32::from(area.x), i32::from(area.y));
+    let (aw, ah) = (i32::from(area.w), i32::from(area.h));
+    if cx < ax || cx >= ax + aw || cy < ay || cy >= ay + ah {
+        return None;
+    }
+    if cy < ay + ah / 2 {
+        let band = (i32::from(y) + i32::from(h) - ay).clamp(0, ah) as u16;
+        Some((band, 0))
+    } else {
+        let band = (ay + ah - i32::from(y)).clamp(0, ah) as u16;
+        Some((0, band))
+    }
 }
 
 struct Popup {
@@ -538,6 +711,51 @@ impl Popup {
     }
 }
 
+/// The hardware OSD: one box with a label, the value and a level bar.
+///
+/// It is kept and redrawn while keys repeat instead of being recreated per
+/// press, so a held key glides the bar without the window flickering.
+struct Osd {
+    win: Window,
+    gc: Gcontext,
+    renderer: Renderer,
+    width: u16,
+    height: u16,
+    metrics: osd::Metrics,
+    channel: String,
+    text: String,
+    level: Option<u32>,
+    muted: bool,
+    /// Bar level when the current glide started, and its target.
+    from: f32,
+    target: f32,
+    started: Instant,
+    flash_until: Option<Instant>,
+    expires: Instant,
+    /// Whether the last frame was drawn mid-glide or lit up.
+    moving: bool,
+}
+
+impl Osd {
+    fn destroy(self, c: &RustConnection) {
+        let _ = self.renderer.release(c);
+        let _ = c.destroy_window(self.win);
+        let _ = c.free_gc(self.gc);
+    }
+
+    /// The level the bar shows right now.
+    fn shown(&self, now: Instant) -> f32 {
+        let t =
+            now.saturating_duration_since(self.started).as_secs_f32() / osd::GLIDE.as_secs_f32();
+        osd::glide(self.from, self.target, t)
+    }
+
+    fn animating(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.started) < osd::GLIDE
+            || self.flash_until.is_some_and(|until| now < until)
+    }
+}
+
 struct Ui {
     c: RustConnection,
     root: Window,
@@ -546,7 +764,9 @@ struct Ui {
     events: Sender<UiEvent>,
     popups: Vec<Popup>,
     silent: Vec<(u32, Instant)>,
-    osd: Option<Popup>,
+    osd: Option<Osd>,
+    /// Last level per OSD channel, so `Muted` still shows how loud it was.
+    osd_levels: HashMap<String, u32>,
     locked: bool,
     pending: Vec<UiCommand>,
     lock_atom: Atom,
@@ -587,8 +807,11 @@ impl Ui {
             root,
             &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
         )?;
-        let (origin_x, origin_y, area_w, area_h) = monitor_area(&c, root, &cfg.monitor);
-        let (reserved_top, reserved_bottom) = reserved_edges(&c, root);
+        let area = monitor_area(&c, root, &cfg.monitor);
+        let (reserved_top, reserved_bottom) = reserved_edges(&c, root, area);
+        // Output changes (hotplug, docking, nirudisplay profiles) move the
+        // area under the surfaces; follow them instead of the start-up layout.
+        let _ = c.randr_select_input(root, x11rb::protocol::randr::NotifyMask::SCREEN_CHANGE);
         Ok(Self {
             c,
             root,
@@ -598,14 +821,15 @@ impl Ui {
             popups: Vec::new(),
             silent: Vec::new(),
             osd: None,
+            osd_levels: HashMap::new(),
             locked: false,
             pending: Vec::new(),
             lock_atom,
             last_lock_check: Instant::now() - Duration::from_secs(1),
-            height_limit: area_h.min(geometry.height),
-            width_limit: area_w.min(geometry.width),
-            origin_x,
-            origin_y,
+            height_limit: area.h.min(geometry.height),
+            width_limit: area.w.min(geometry.width),
+            origin_x: area.x,
+            origin_y: area.y,
             reserved_top,
             reserved_bottom,
             config_serial,
@@ -656,8 +880,6 @@ impl Ui {
             (padding as u16 * 2 + line_height as u16 + rows.saturating_sub(1) * line_step + 6)
                 .min(self.height_limit.saturating_sub(20))
                 .max(40);
-        let win = self.c.generate_id()?;
-        let gc = self.c.generate_id()?;
         let x = self.origin_x
             + match self.cfg.position {
                 Position::TopRight | Position::BottomRight => {
@@ -674,13 +896,46 @@ impl Ui {
             self.cfg.width,
             height,
         )?;
+        let (win, gc) = self.new_surface(x, y, self.cfg.width, height)?;
+        let timeout = if id.is_some() {
+            Duration::from_millis(
+                self.cfg
+                    .max_timeout_ms
+                    .min(self.cfg.default_timeout_ms.max(500)),
+            )
+        } else {
+            Duration::from_millis(1200)
+        };
+        let _ = colour;
+        Ok(Popup {
+            id,
+            win,
+            gc,
+            renderer,
+            height,
+            expires: Instant::now() + timeout,
+            notification: None,
+            text: text.to_string(),
+            actions: actions.to_vec(),
+            hitboxes: Vec::new(),
+            last_raise: Instant::now(),
+        })
+    }
+
+    /// Create and map one override-redirect surface (notification or OSD).
+    ///
+    /// Override-redirect keeps keyboard focus where it is; the notification
+    /// window type and the above state tell compositors and the bar what it is.
+    fn new_surface(&self, x: i16, y: i16, width: u16, height: u16) -> Result<(Window, Gcontext)> {
+        let win = self.c.generate_id()?;
+        let gc = self.c.generate_id()?;
         self.c.create_window(
             0,
             win,
             self.root,
             x,
             y,
-            self.cfg.width,
+            width,
             height,
             0,
             WindowClass::INPUT_OUTPUT,
@@ -724,29 +979,7 @@ impl Ui {
         self.c.map_window(win)?;
         self.c
             .configure_window(win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
-        let timeout = if id.is_some() {
-            Duration::from_millis(
-                self.cfg
-                    .max_timeout_ms
-                    .min(self.cfg.default_timeout_ms.max(500)),
-            )
-        } else {
-            Duration::from_millis(1200)
-        };
-        let _ = colour;
-        Ok(Popup {
-            id,
-            win,
-            gc,
-            renderer,
-            height,
-            expires: Instant::now() + timeout,
-            notification: None,
-            text: text.to_string(),
-            actions: actions.to_vec(),
-            hitboxes: Vec::new(),
-            last_raise: Instant::now(),
-        })
+        Ok((win, gc))
     }
 
     fn draw_popup(&mut self, index: usize) -> Result<()> {
@@ -906,10 +1139,31 @@ impl Ui {
         Ok(())
     }
 
-    fn refresh_reserved(&mut self) {
-        let (top, bottom) = reserved_edges(&self.c, self.root);
+    /// Choose the monitor again (focus, pointer or output may have changed)
+    /// and re-read the bar band on it. Returns whether the area moved.
+    fn refresh_area(&mut self) -> bool {
+        let area = monitor_area(&self.c, self.root, &self.cfg.monitor);
+        let (top, bottom) = reserved_edges(&self.c, self.root, area);
+        let (rw, rh) = self
+            .c
+            .get_geometry(self.root)
+            .ok()
+            .and_then(|r| r.reply().ok())
+            .map(|g| (g.width, g.height))
+            .unwrap_or((area.w, area.h));
+        let moved = (
+            self.origin_x,
+            self.origin_y,
+            self.width_limit,
+            self.height_limit,
+        ) != (area.x, area.y, area.w.min(rw), area.h.min(rh));
+        self.origin_x = area.x;
+        self.origin_y = area.y;
+        self.width_limit = area.w.min(rw);
+        self.height_limit = area.h.min(rh);
         self.reserved_top = top;
         self.reserved_bottom = bottom;
+        moved
     }
 
     /// Re-read the shared NIRU configuration after a theme or reload command.
@@ -952,22 +1206,13 @@ impl Ui {
             ));
             popup.destroy(&self.c);
         }
-        let osd = self.osd.take().map(|popup| {
-            let state = (popup.text.clone(), popup.expires);
-            popup.destroy(&self.c);
+        let osd = self.osd.take().map(|o| {
+            let state = (o.channel.clone(), o.text.clone(), o.expires);
+            o.destroy(&self.c);
             state
         });
         self.cfg = cfg;
-        let geometry = self.c.get_geometry(self.root)?.reply()?;
-        let (origin_x, origin_y, area_w, area_h) =
-            monitor_area(&self.c, self.root, &self.cfg.monitor);
-        let (reserved_top, reserved_bottom) = reserved_edges(&self.c, self.root);
-        self.origin_x = origin_x;
-        self.origin_y = origin_y;
-        self.height_limit = area_h.min(geometry.height);
-        self.width_limit = area_w.min(geometry.width);
-        self.reserved_top = reserved_top;
-        self.reserved_bottom = reserved_bottom;
+        self.refresh_area();
         for (id, text, actions, notification, expires) in notifications {
             let mut popup = self.create_popup(id, &text, self.cfg.palette.accent, &actions)?;
             popup.notification = notification;
@@ -988,25 +1233,33 @@ impl Ui {
             self.draw_popup(index)?;
         }
         self.layout()?;
-        if let Some((text, expires)) = osd {
-            let mut popup = self.create_popup(None, &text, self.cfg.palette.accent, &[])?;
-            popup.expires = expires;
-            self.place_osd(&mut popup)?;
-            self.osd = Some(popup);
+        if let Some((channel, text, expires)) = osd {
+            self.osd(&channel, &text)?;
+            if let Some(o) = self.osd.as_mut() {
+                o.expires = expires;
+            }
         }
         self.expire()
     }
 
-    fn place_osd(&mut self, popup: &mut Popup) -> Result<()> {
-        let x = self.origin_x + (self.width_limit as i16 - self.cfg.width as i16) / 2;
-        let usable =
-            self.height_limit as i16 - self.reserved_top as i16 - self.reserved_bottom as i16;
-        let y = self.origin_y + self.reserved_top as i16 + (usable - popup.height as i16) / 2;
+    /// Put the OSD on the current monitor, low and centred.
+    fn place_osd(&self, o: &Osd) -> Result<()> {
+        let x = self.origin_x + (self.width_limit as i16 - o.width as i16).max(0) / 2;
+        let y = osd::top(
+            self.origin_y,
+            self.height_limit,
+            self.reserved_top,
+            self.reserved_bottom,
+            o.height,
+        );
         self.c.configure_window(
-            popup.win,
-            &ConfigureWindowAux::new().x(x as i32).y(y as i32),
+            o.win,
+            &ConfigureWindowAux::new()
+                .x(i32::from(x))
+                .y(i32::from(y))
+                .stack_mode(StackMode::ABOVE),
         )?;
-        self.draw_osd(popup)
+        Ok(())
     }
 
     fn timeout_for(&self, notification: &Notification) -> u64 {
@@ -1034,7 +1287,7 @@ impl Ui {
     fn show(&mut self, notification: Notification) -> Result<()> {
         // The bar may map after the notifier starts. Re-read its strut so a
         // notification never starts flush against a newly started bar.
-        self.refresh_reserved();
+        self.refresh_area();
         let timeout = self.timeout_for(&notification);
         self.silent.retain(|(id, _)| *id != notification.id);
         if let Some(index) = self
@@ -1072,37 +1325,216 @@ impl Ui {
         self.layout()
     }
 
-    fn osd(&mut self, _channel: &str, text: &str) -> Result<()> {
-        self.refresh_reserved();
-        if let Some(old) = self.osd.take() {
-            old.destroy(&self.c);
+    fn osd(&mut self, channel: &str, text: &str) -> Result<()> {
+        // Every press picks the monitor again, so the OSD follows focus.
+        self.refresh_area();
+        let now = Instant::now();
+        let (level, muted, shown_text) = match osd::read(text) {
+            osd::Reading::Level(n) => {
+                self.osd_levels.insert(channel.to_string(), n);
+                (Some(n), false, format!("{n}%"))
+            }
+            osd::Reading::Muted => (
+                self.osd_levels.get(channel).copied(),
+                true,
+                "Muted".to_string(),
+            ),
+            osd::Reading::Text(t) => (None, false, t),
+        };
+        let metrics = osd::metrics(self.cfg.font_size);
+        // A different channel or a font change starts a fresh box; a repeat
+        // of the same channel keeps the window and glides from where it is.
+        let keep = self
+            .osd
+            .as_ref()
+            .is_some_and(|o| o.channel == channel && o.metrics == metrics);
+        if !keep {
+            if let Some(old) = self.osd.take() {
+                old.destroy(&self.c);
+            }
+            let line = Renderer::measure(self.cfg.font_path.as_deref(), metrics.big)?.1;
+            let height = (metrics.padding * 2 + line + metrics.gap) as u16 + metrics.bar;
+            let width = metrics
+                .width
+                .min(self.width_limit.saturating_sub(16))
+                .max(160);
+            let (win, gc) = self.new_surface(self.origin_x, self.origin_y, width, height)?;
+            let renderer = Renderer::new(
+                &self.c,
+                self.root,
+                self.cfg.font_path.as_deref(),
+                self.cfg.font_size,
+                width,
+                height,
+            )?;
+            let start = level.map(|l| l as f32).unwrap_or(0.0);
+            self.osd = Some(Osd {
+                win,
+                gc,
+                renderer,
+                width,
+                height,
+                metrics,
+                channel: channel.to_string(),
+                text: String::new(),
+                level,
+                muted,
+                from: start,
+                target: start,
+                started: now - osd::GLIDE,
+                flash_until: None,
+                expires: now,
+                moving: false,
+            });
         }
-        let mut popup = self.create_popup(None, text, self.cfg.palette.accent, &[])?;
-        popup.text = text.to_string();
-        // OSD is a single centred box, not part of the stack.
-        self.place_osd(&mut popup)?;
-        self.osd = Some(popup);
+        let Some(mut o) = self.osd.take() else {
+            return Ok(());
+        };
+        let shown = o.shown(now);
+        // Pressing against the end of the range lights the bar briefly, so a
+        // key that cannot go further still answers.
+        if keep
+            && level.is_some()
+            && level == o.level
+            && matches!(level, Some(0) | Some(100))
+            && !muted
+        {
+            o.flash_until = Some(now + osd::FLASH);
+        }
+        if let Some(l) = level {
+            o.from = shown;
+            o.target = l as f32;
+            o.started = now;
+        }
+        o.level = level;
+        o.muted = muted;
+        o.text = shown_text;
+        o.expires = now + osd::LINGER;
+        self.place_osd(&o)?;
+        self.draw_osd(&mut o, now)?;
+        self.osd = Some(o);
         self.c.flush()?;
         Ok(())
     }
 
-    fn draw_osd(&self, popup: &mut Popup) -> Result<()> {
+    /// Draw the whole OSD: frame, icon, label, value and bar.
+    fn draw_osd(&self, o: &mut Osd, now: Instant) -> Result<()> {
         let pal = self.cfg.palette;
-        popup.renderer.clear(&self.c, popup.gc, pal.surface)?;
-        let baseline = popup.height as i16 / 2 + popup.renderer.line_height / 2 - 2;
-        popup.renderer.line(
+        let m = o.metrics;
+        o.renderer.clear(&self.c, o.gc, pal.border)?;
+        o.renderer.fill(
             &self.c,
-            popup.gc,
-            16,
-            baseline,
-            &popup.text,
-            pal.foreground,
+            o.gc,
+            Rectangle {
+                x: 1,
+                y: 1,
+                width: o.width.saturating_sub(2),
+                height: o.height.saturating_sub(2),
+            },
             pal.surface,
         )?;
-        popup
-            .renderer
-            .present(&self.c, popup.gc, popup.win, self.cfg.width)?;
+        let big_ascent = o.renderer.ascent_at(m.big);
+        let baseline = m.padding + big_ascent;
+        let mut x = m.padding;
+        if let Some(icon) =
+            osd::icon(&o.channel, o.level, o.muted).filter(|&i| o.renderer.has_glyph(i))
+        {
+            o.renderer.line_at_size(
+                &self.c,
+                o.gc,
+                x,
+                baseline,
+                &icon.to_string(),
+                m.big,
+                if o.muted {
+                    pal.muted
+                } else {
+                    pal.accent_text()
+                },
+                pal.surface,
+            )?;
+            let ink = o.renderer.ink_width(icon, m.big);
+            x += ink.max(o.renderer.advance_at(m.big)) + m.gap * 2 / 3;
+        }
+        o.renderer.line(
+            &self.c,
+            o.gc,
+            x,
+            baseline,
+            &osd::label(&o.channel),
+            pal.muted,
+            pal.surface,
+        )?;
+        let chars = o.text.chars().count() as i16;
+        let value_x = o.width as i16 - m.padding - chars * o.renderer.advance_at(m.big);
+        o.renderer.line_at_size(
+            &self.c,
+            o.gc,
+            value_x.max(x),
+            baseline,
+            &o.text,
+            m.big,
+            if o.muted { pal.muted } else { pal.foreground },
+            pal.surface,
+        )?;
+        self.draw_osd_bar(o, now)
+    }
+
+    /// Draw only the bar and copy the frame; used for every glide frame.
+    fn draw_osd_bar(&self, o: &mut Osd, now: Instant) -> Result<()> {
+        let pal = self.cfg.palette;
+        let m = o.metrics;
+        let track_w = o.width.saturating_sub((m.padding * 2) as u16);
+        let y = o.height as i16 - m.padding - m.bar as i16;
+        let track = Rectangle {
+            x: m.padding,
+            y,
+            width: track_w,
+            height: m.bar,
+        };
+        if o.level.is_some() {
+            o.renderer.fill(&self.c, o.gc, track, pal.track())?;
+            let colour = if o.muted {
+                pal.muted
+            } else if o.flash_until.is_some_and(|until| now < until) {
+                pal.foreground
+            } else {
+                pal.accent_text()
+            };
+            let fill = osd::fill_width(track_w, o.shown(now));
+            o.renderer.fill(
+                &self.c,
+                o.gc,
+                Rectangle {
+                    width: fill,
+                    ..track
+                },
+                colour,
+            )?;
+        } else {
+            o.renderer.fill(&self.c, o.gc, track, pal.surface)?;
+        }
+        o.moving = o.animating(now);
+        o.renderer.present(&self.c, o.gc, o.win, o.width)?;
         Ok(())
+    }
+
+    /// Advance a running glide or flash by one frame.
+    fn tick_osd(&mut self) -> Result<()> {
+        let now = Instant::now();
+        let Some(mut o) = self.osd.take() else {
+            return Ok(());
+        };
+        if o.moving {
+            self.draw_osd_bar(&mut o, now)?;
+            self.c.flush()?;
+        }
+        self.osd = Some(o);
+        Ok(())
+    }
+
+    fn osd_moving(&self) -> bool {
+        self.osd.as_ref().is_some_and(|o| o.moving)
     }
 
     fn activate_command(&mut self, id: u32, key: &str) -> Result<()> {
@@ -1250,10 +1682,10 @@ impl Ui {
                     Event::Expose(e) => {
                         if let Some(index) = self.popups.iter().position(|p| p.win == e.window) {
                             self.draw_popup(index)?;
-                        } else if self.osd.as_ref().is_some_and(|p| p.win == e.window) {
-                            if let Some(mut p) = self.osd.take() {
-                                self.draw_osd(&mut p)?;
-                                self.osd = Some(p);
+                        } else if self.osd.as_ref().is_some_and(|o| o.win == e.window) {
+                            if let Some(mut o) = self.osd.take() {
+                                self.draw_osd(&mut o, Instant::now())?;
+                                self.osd = Some(o);
                             }
                         }
                     }
@@ -1267,6 +1699,15 @@ impl Ui {
                             }
                         }
                     }
+                    Event::RandrScreenChangeNotify(_) => {
+                        // Docking, hotplug or a display profile: move what is
+                        // shown onto the screen that now applies.
+                        self.refresh_area();
+                        self.layout()?;
+                        if let Some(o) = self.osd.as_ref() {
+                            self.place_osd(o)?;
+                        }
+                    }
                     Event::PropertyNotify(e)
                         if e.window == self.root
                             && (e.atom == self.config_serial || e.atom == self.theme_atom) =>
@@ -1278,6 +1719,7 @@ impl Ui {
                 }
             }
             self.expire()?;
+            self.tick_osd()?;
             if self.last_lock_check.elapsed() >= Duration::from_millis(250) {
                 self.last_lock_check = Instant::now();
                 let locked = self.lock_established();
@@ -1299,8 +1741,10 @@ impl Ui {
                 // X forty times per second: keep the existing 250 ms lock check
                 // cadence. Visible/expiring windows retain the short X event
                 // and expiry cadence for clicks, stacking and close deadlines.
-                let wait = if self.popups.is_empty() && self.osd.is_none() && self.silent.is_empty()
-                {
+                let wait = if self.osd_moving() {
+                    // A gliding bar draws at about 120 Hz; it lasts 140 ms.
+                    Duration::from_millis(8)
+                } else if self.popups.is_empty() && self.osd.is_none() && self.silent.is_empty() {
                     Duration::from_millis(250)
                 } else {
                     Duration::from_millis(25)
@@ -1488,5 +1932,50 @@ fn main() {
     if let Err(e) = result {
         eprintln!("nirunotify: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::*;
+
+    const STACKED: &str = "DisplayPort-5\t0\t0\t2560\t0\t10\t0\ttile\n\
+                           DisplayPort-4\t0\t1440\t2560\t10\t10\t2\ttile\n";
+
+    #[test]
+    fn focused_screen_comes_from_the_workspace_range() {
+        assert_eq!(
+            focused_in_table(STACKED, 3),
+            Some(("DisplayPort-5".into(), 0, 0))
+        );
+        assert_eq!(
+            focused_in_table(STACKED, 12),
+            Some(("DisplayPort-4".into(), 0, 1440))
+        );
+        assert_eq!(focused_in_table(STACKED, 40), None);
+        assert_eq!(focused_in_table("garbage\n", 0), None);
+    }
+
+    #[test]
+    fn a_bar_reserves_only_its_own_screen() {
+        let upper = Area {
+            x: 0,
+            y: 0,
+            w: 2560,
+            h: 1440,
+        };
+        let lower = Area {
+            x: 0,
+            y: 1440,
+            w: 2560,
+            h: 1440,
+        };
+        // The lower screen's top bar.
+        assert_eq!(dock_band(lower, true, 0, 1440, 2560, 28), Some((28, 0)));
+        assert_eq!(dock_band(upper, true, 0, 1440, 2560, 28), None);
+        // A bottom bar on the upper screen.
+        assert_eq!(dock_band(upper, true, 0, 1412, 2560, 28), Some((0, 28)));
+        // A hidden bar reserves nothing.
+        assert_eq!(dock_band(lower, false, 0, 1440, 2560, 28), None);
     }
 }

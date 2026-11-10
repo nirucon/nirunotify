@@ -13,11 +13,12 @@ jobs:
       - run: cargo test --locked
       - name: D-Bus and X11 smoke test
         run: |
-          sudo apt-get update && sudo apt-get install -y dbus-x11 xvfb xdotool x11-utils x11-apps imagemagick libnotify-bin libglib2.0-bin
+          sudo apt-get update && sudo apt-get install -y dbus-x11 xvfb xdotool x11-utils x11-apps x11-xserver-utils imagemagick libnotify-bin libglib2.0-bin
           cargo build --release --locked
           sh tests/ui-smoke.sh target/release/nirunotify
+          sh tests/multihead-smoke.sh target/release/nirunotify
           sh tests/sounds-smoke.sh target/release/nirunotify
       - name: Shellcheck
         run: |
           docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable \
-            -S warning -s sh /src/install.sh /src/tests/ui-smoke.sh /src/tests/sounds-smoke.sh
+            -S warning -s sh /src/install.sh /src/tests/ui-smoke.sh /src/tests/multihead-smoke.sh /src/tests/sounds-smoke.sh

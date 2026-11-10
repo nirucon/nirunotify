@@ -21,8 +21,9 @@ pub struct Config {
     pub max_timeout_ms: u64,
     pub critical_timeout_ms: u64,
     pub critical_ignore_dnd: bool,
-    /// Empty means the monitor under the pointer; "primary" uses RandR's
-    /// primary output; anything else is matched against an output name.
+    /// Empty or "focused" follows the NIRUWM focused screen; "pointer" uses
+    /// the screen under the pointer; "primary" uses RandR's primary output;
+    /// anything else is matched against an output name.
     pub monitor: String,
     pub font_path: Option<String>,
     pub font_size: f32,
@@ -41,6 +42,42 @@ pub struct Palette {
     pub accent: u32,
     pub warning: u32,
     pub error: u32,
+}
+
+impl Palette {
+    /// The theme accent, lifted towards the text colour when it would barely
+    /// show on the surface (dim accents such as the default grey). The OSD
+    /// bar and icon use it, so a level is always readable.
+    pub fn accent_text(&self) -> u32 {
+        if (luminance(self.accent) - luminance(self.surface)).abs() < 0.18 {
+            mix(self.accent, self.foreground, 0.5)
+        } else {
+            self.accent
+        }
+    }
+
+    /// The empty part of a level bar: a faint step up from the surface.
+    pub fn track(&self) -> u32 {
+        mix(self.surface, self.foreground, 0.14)
+    }
+}
+
+/// Relative luminance (0..1) of an RGB colour, sRGB weights, no gamma.
+fn luminance(colour: u32) -> f32 {
+    let r = ((colour >> 16) & 255) as f32 / 255.0;
+    let g = ((colour >> 8) & 255) as f32 / 255.0;
+    let b = (colour & 255) as f32 / 255.0;
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/// Blend `a` towards `b` by `t` (0 = a, 1 = b).
+pub fn mix(a: u32, b: u32, t: f32) -> u32 {
+    let ch = |shift: u32| {
+        let x = ((a >> shift) & 255) as f32;
+        let y = ((b >> shift) & 255) as f32;
+        ((x + (y - x) * t).round() as u32).min(255) << shift
+    };
+    ch(16) | ch(8) | ch(0)
 }
 
 impl Default for Palette {
@@ -391,7 +428,7 @@ impl Config {
             self.max_timeout_ms,
             self.critical_timeout_ms,
             self.critical_ignore_dnd,
-            if self.monitor.is_empty() { "pointer" } else { &self.monitor },
+            if self.monitor.is_empty() { "focused" } else { &self.monitor },
             self.font_size,
             self.font_path.as_deref().unwrap_or("auto"),
             self.position,
