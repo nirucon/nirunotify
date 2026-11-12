@@ -92,7 +92,7 @@ nirunotify --version
 `volume-up`, `volume-down`, `volume-limit`, `mute`, `unmute`, `brightness-up`,
 `brightness-down`, `screenshot`, `power-plug`, `power-unplug`, `battery-low`,
 `battery-critical`, `battery-full`, `device-connect`, `device-disconnect`,
-`auth-fail`, `lock`, `unlock` and the session events. `--osd ... --sound ...`
+`auth-fail`, `lock`, `unlock`, `lock-typing` and the session events. `--osd ... --sound ...`
 shows the OSD and plays the sound in one call; `LEVEL` picks the volume tick
 for the new level, and `unmuted` saves a `wpctl` call when the caller already
 knows the sink state. Other programs can send the same request as one line,
@@ -101,7 +101,12 @@ knows the sink state. Other programs can send the same request as one line,
 The sound settings belong to NIRUX: `~/.config/nirux/sounds.toml`, managed with
 `nirux sounds` and reread when the file changes. Sound files are
 `~/.config/nirux/sounds/EVENT.ogg` (yours) or the NIRUX ones under
-`$NIRUX_PREFIX/share/nirux/sounds`. A held key plays at most one tick per
+`$NIRUX_PREFIX/share/nirux/sounds`. `EVENT-2.ogg`, `EVENT-3.ogg` and so on
+next to `EVENT.ogg` are variants, and each play picks one at random (never the
+same twice in a row). `lock-typing` is NIRULOCK's typewriter click for each key
+typed in the password field (category `system`, on by default); it is not
+held back by `rate_limit_ms`, only capped at one click per 30 ms, and starts
+with a short PipeWire buffer. A held key plays at most one tick per
 `rate_limit_ms`; Do Not Disturb silences notification sounds only; a muted sink
 silences everything when `respect_mute` is on. See
 [NIRUX sounds](https://github.com/nirucon/nirux/blob/main/docs/SOUNDS.md).

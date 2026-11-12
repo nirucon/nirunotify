@@ -101,6 +101,21 @@ silent 'brightness is off by default'
 "$BIN" --sound auth-fail >/dev/null
 expect "$SOUNDS/auth-fail.ogg" 'auth-fail'
 
+# Lock-screen typing: every key at a normal typing pace plays, with a short
+# buffer, one of the variants.
+for v in lock-typing lock-typing-2 lock-typing-3; do printf 'OggS\n' > "$SOUNDS/$v.ogg"; done
+for n in 1 2 3 4 5; do "$BIN" --sound lock-typing >/dev/null; sleep 0.06; done
+i=0
+while [ "$(wc -l < "$PLAYED")" -lt 5 ]; do
+  i=$((i + 1)); [ "$i" -gt 60 ] && fail "typing: $(cat "$PLAYED")"
+  sleep 0.05
+done
+sleep 0.2
+[ "$(wc -l < "$PLAYED")" -eq 5 ] || fail "typing: expected 5, played $(cat "$PLAYED")"
+grep -qv -- '--latency=20ms' "$PLAYED" && fail "typing without a short buffer: $(cat "$PLAYED")"
+grep -Eqv "$SOUNDS/lock-typing(-[23])?\.ogg\$" "$PLAYED" && fail "typing file: $(cat "$PLAYED")"
+: > "$PLAYED"
+
 # Do Not Disturb silences notifications only.
 "$BIN" --dnd on >/dev/null
 "$BIN" --sound screenshot >/dev/null

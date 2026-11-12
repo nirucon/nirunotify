@@ -11,6 +11,8 @@
 //! - Keys before the first table header count as `[sounds]`; keys compare
 //!   case-insensitively; the first occurrence of a key wins.
 //! - `~/.config/nirux/sounds/EVENT.ogg` replaces the NIRUX sound for EVENT.
+//!   `EVENT-2.ogg`, `EVENT-3.ogg` … next to it are variants: each play picks
+//!   one at random (the lock screen's typing sound uses three).
 //!
 //! Playing never goes through a shell: the daemon starts `pw-play` (or
 //! `paplay`, `ffplay`) on the resolved file and reaps it. Nothing here
@@ -54,6 +56,7 @@ pub const EVENTS: &[(&str, Category, bool)] = &[
     ("auth-fail", Category::System, true),
     ("lock", Category::System, false),
     ("unlock", Category::System, false),
+    ("lock-typing", Category::System, true),
     ("notification", Category::Notifications, true),
     ("volume-up", Category::Feedback, true),
     ("volume-down", Category::Feedback, true),
@@ -78,6 +81,17 @@ pub fn lookup(event: &str) -> Option<(Category, bool)> {
         .find(|(name, _, _)| *name == event)
         .map(|(_, category, default)| (*category, *default))
 }
+
+/// Events played for every key typed. They never share the feedback rate
+/// limit (that would drop normal typing); a flood is capped at one play per
+/// `TYPING_GAP` instead.
+pub fn is_typing(event: &str) -> bool {
+    event == "lock-typing"
+}
+
+/// About 33 plays a second: faster than anyone types, slower than a stuck
+/// key or a script.
+pub const TYPING_GAP: Duration = Duration::from_millis(30);
 
 /// Events that a held key repeats; they share the feedback rate limit.
 pub fn is_key_repeat(event: &str) -> bool {
@@ -277,10 +291,17 @@ impl Paths {
 
     /// The user's EVENT.ogg, then the NIRUX tick for the nearest 10 % step
     /// (volume ticks with a level), then the NIRUX EVENT.ogg.
+    #[cfg(test)]
     pub fn file_for(&self, event: &str, level: Option<u32>) -> Option<PathBuf> {
+        self.choices_for(event, level).into_iter().next()
+    }
+
+    /// The file for EVENT and its variants (`EVENT-2.ogg`, `EVENT-3.ogg` …,
+    /// up to the first gap) from the same directory, the plain file first.
+    pub fn choices_for(&self, event: &str, level: Option<u32>) -> Vec<PathBuf> {
         let own = self.user.join(format!("{event}.ogg"));
         if own.is_file() {
-            return Some(own);
+            return with_variants(&self.user, event, own);
         }
         if let (Some(level), "volume-up" | "volume-down") = (level, event) {
             let step = ((level.min(100) + 5) / 10 * 10).min(100);
@@ -289,11 +310,53 @@ impl Paths {
                 .join("levels")
                 .join(format!("{event}-{step:03}.ogg"));
             if tick.is_file() {
-                return Some(tick);
+                return vec![tick];
             }
         }
         let base = self.nirux.join(format!("{event}.ogg"));
-        base.is_file().then_some(base)
+        if base.is_file() {
+            with_variants(&self.nirux, event, base)
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// At most this many variants are looked for.
+const MAX_VARIANTS: u32 = 16;
+
+fn with_variants(dir: &Path, event: &str, first: PathBuf) -> Vec<PathBuf> {
+    let mut files = vec![first];
+    for n in 2..=MAX_VARIANTS {
+        let variant = dir.join(format!("{event}-{n}.ogg"));
+        if !variant.is_file() {
+            break;
+        }
+        files.push(variant);
+    }
+    files
+}
+
+/// A small xorshift generator for picking variants; no need for a crate.
+#[derive(Clone, Debug)]
+struct Pick(u64);
+
+impl Pick {
+    fn seeded() -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        Self(nanos ^ (u64::from(std::process::id()) << 32) | 1)
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        (x % n.max(1) as u64) as usize
     }
 }
 
@@ -410,13 +473,16 @@ fn sink_muted() -> bool {
         .unwrap_or(false)
 }
 
-/// The player command for FILE at VOLUME percent, without a shell.
-fn player(file: &Path, volume: u8) -> Option<Command> {
+/// The player command for FILE at VOLUME percent, without a shell. A typing
+/// click asks PipeWire for a short buffer so it starts with the key.
+fn player(file: &Path, volume: u8, quick: bool) -> Option<Command> {
     if let Some(pw) = in_path("pw-play") {
         let mut command = Command::new(pw);
-        command
-            .arg(format!("--volume={:.2}", f32::from(volume) / 100.0))
-            .arg(file);
+        command.arg(format!("--volume={:.2}", f32::from(volume) / 100.0));
+        if quick {
+            command.arg("--latency=20ms");
+        }
+        command.arg(file);
         return Some(command);
     }
     if let Some(pa) = in_path("paplay") {
@@ -442,6 +508,9 @@ pub struct Engine {
     pub paths: Paths,
     pub cached: Cached,
     limit: RateLimit,
+    pick: Pick,
+    /// The variant played last per event, so the same one does not repeat.
+    last_variant: HashMap<String, usize>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -460,6 +529,8 @@ impl Engine {
             paths,
             cached,
             limit: RateLimit::default(),
+            pick: Pick::seeded(),
+            last_variant: HashMap::new(),
         }
     }
 
@@ -480,18 +551,41 @@ impl Engine {
         {
             return Decision::RateLimited;
         }
+        if is_typing(&request.event) && !self.limit.allow(&request.event, now, TYPING_GAP) {
+            return Decision::RateLimited;
+        }
         if settings.respect_mute() && request.muted.unwrap_or_else(&mut *muted) {
             return Decision::Muted;
         }
-        match self.paths.file_for(&request.event, request.level) {
-            Some(file) => Decision::Play {
-                file,
-                volume: settings.volume_for(&request.event),
-            },
-            None => Decision::Missing,
+        let mut choices = self.paths.choices_for(&request.event, request.level);
+        if choices.is_empty() {
+            return Decision::Missing;
+        }
+        let mut index = 0;
+        if choices.len() > 1 {
+            // Any variant but the one played last.
+            index = match self.last_variant.get(&request.event).copied() {
+                Some(last) if last < choices.len() => {
+                    let pick = self.pick.below(choices.len() - 1);
+                    if pick >= last {
+                        pick + 1
+                    } else {
+                        pick
+                    }
+                }
+                _ => self.pick.below(choices.len()),
+            };
+            self.last_variant.insert(request.event.clone(), index);
+        }
+        Decision::Play {
+            file: choices.swap_remove(index),
+            volume: settings.volume_for(&request.event),
         }
     }
 }
+
+/// How long one sink mute answer is reused while typing.
+const TYPING_MUTE_CACHE: Duration = Duration::from_secs(2);
 
 /// Start the worker that plays requests. It blocks while idle and wakes only
 /// to reap players that are still running.
@@ -505,6 +599,9 @@ pub fn start() -> Sender<Request> {
 
 fn worker(rx: Receiver<Request>, mut engine: Engine) {
     let mut children: Vec<Child> = Vec::new();
+    // Typing asks for the sink state on every key; one `wpctl` answer is
+    // reused for a moment so it never sits between a key and its click.
+    let mut typing_mute: Option<(Instant, bool)> = None;
     loop {
         let request = if children.is_empty() {
             match rx.recv() {
@@ -521,13 +618,27 @@ fn worker(rx: Receiver<Request>, mut engine: Engine) {
         children.retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_)) | Err(_)));
         let Some(request) = request else { continue };
         let start = Instant::now();
-        let decision = engine.decide(&request, start, &mut sink_muted);
+        let decision = if is_typing(&request.event) {
+            let mut cached_mute = || match typing_mute {
+                Some((at, muted)) if start.saturating_duration_since(at) < TYPING_MUTE_CACHE => {
+                    muted
+                }
+                _ => {
+                    let muted = sink_muted();
+                    typing_mute = Some((start, muted));
+                    muted
+                }
+            };
+            engine.decide(&request, start, &mut cached_mute)
+        } else {
+            engine.decide(&request, start, &mut sink_muted)
+        };
         if let Decision::Play { file, volume } = &decision {
             // A runaway burst can never pile up players.
             if children.len() >= 8 {
                 continue;
             }
-            if let Some(mut command) = player(file, *volume) {
+            if let Some(mut command) = player(file, *volume, is_typing(&request.event)) {
                 if let Ok(child) = command
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
@@ -766,6 +877,120 @@ mod tests {
             engine.decide(&Request::new("power-plug"), t, &mut unmuted),
             Decision::Off
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lock_typing_is_a_system_sound_on_by_default() {
+        assert_eq!(lookup("lock-typing"), Some((Category::System, true)));
+        assert!(Settings::parse("").event_enabled("lock-typing"));
+        assert!(
+            !Settings::parse("[sounds.system]\nlock-typing = false\n").event_enabled("lock-typing")
+        );
+        assert!(!Settings::parse("[sounds.system]\nenabled = false\n").event_enabled("lock-typing"));
+        assert!(!Settings::parse("[sounds]\nenabled = false\n").event_enabled("lock-typing"));
+        assert!(
+            Settings::parse("[sounds.feedback]\nenabled = false\n").event_enabled("lock-typing")
+        );
+        assert_eq!(
+            Request::parse("lock-typing"),
+            Some(Request::new("lock-typing"))
+        );
+    }
+
+    fn typing_engine(name: &str, variants: &[&str]) -> (PathBuf, Paths, Engine) {
+        let root = temp_dir(name);
+        let paths = Paths {
+            config: root.join("sounds.toml"),
+            user: root.join("user"),
+            nirux: root.join("nirux"),
+        };
+        std::fs::create_dir_all(&paths.nirux).unwrap();
+        std::fs::create_dir_all(&paths.user).unwrap();
+        for f in variants {
+            std::fs::write(paths.nirux.join(format!("{f}.ogg")), b"OggS").unwrap();
+        }
+        // A slow feedback limit must not touch typing.
+        std::fs::write(&paths.config, "[sounds.feedback]\nrate_limit_ms = 500\n").unwrap();
+        let engine = Engine::new(paths.clone());
+        (root, paths, engine)
+    }
+
+    #[test]
+    fn normal_typing_is_never_dropped_but_a_flood_is_capped() {
+        let (root, _, mut engine) = typing_engine("typing", &["lock-typing"]);
+        let t = Instant::now();
+        let mut unmuted = || false;
+        let typing = Request::new("lock-typing");
+        // 20 keys a second for a second: every one plays.
+        for n in 0..20 {
+            let at = t + Duration::from_millis(50 * n);
+            assert!(
+                matches!(
+                    engine.decide(&typing, at, &mut unmuted),
+                    Decision::Play { .. }
+                ),
+                "key {n}"
+            );
+        }
+        // A stuck key or a script sending every 5 ms: about one in six.
+        let start = t + Duration::from_secs(5);
+        let played = (0..60)
+            .filter(|n| {
+                matches!(
+                    engine.decide(&typing, start + Duration::from_millis(5 * n), &mut unmuted),
+                    Decision::Play { .. }
+                )
+            })
+            .count();
+        assert!((9..=11).contains(&played), "{played}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn variants_are_picked_at_random_without_repeats() {
+        let (root, paths, mut engine) = typing_engine(
+            "variants",
+            &[
+                "lock-typing",
+                "lock-typing-2",
+                "lock-typing-3",
+                "lock-typing-5",
+            ],
+        );
+        let t = Instant::now();
+        let mut unmuted = || false;
+        let mut seen = std::collections::HashSet::new();
+        let mut last = None;
+        for n in 0..60 {
+            let Decision::Play { file, .. } = engine.decide(
+                &Request::new("lock-typing"),
+                t + Duration::from_millis(100 * n),
+                &mut unmuted,
+            ) else {
+                panic!("no play")
+            };
+            assert_ne!(Some(file.clone()), last, "the same variant twice in a row");
+            last = Some(file.clone());
+            seen.insert(file);
+        }
+        // -5 is past the gap after -3, so only three files take part.
+        let expected: std::collections::HashSet<PathBuf> =
+            ["lock-typing", "lock-typing-2", "lock-typing-3"]
+                .iter()
+                .map(|f| paths.nirux.join(format!("{f}.ogg")))
+                .collect();
+        assert_eq!(seen, expected);
+        // The user's own file replaces the NIRUX set, with its own variants.
+        std::fs::write(paths.user.join("lock-typing.ogg"), b"OggS").unwrap();
+        assert_eq!(
+            paths.choices_for("lock-typing", None),
+            vec![paths.user.join("lock-typing.ogg")]
+        );
+        std::fs::write(paths.user.join("lock-typing-2.ogg"), b"OggS").unwrap();
+        assert_eq!(paths.choices_for("lock-typing", None).len(), 2);
+        // A single file is just played.
+        assert_eq!(paths.choices_for("auth-fail", None), Vec::<PathBuf>::new());
         let _ = std::fs::remove_dir_all(root);
     }
 }

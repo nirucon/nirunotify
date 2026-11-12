@@ -15,6 +15,7 @@ enabled = true
 auth-fail = true
 lock = false
 unlock = false
+lock-typing = true
 
 # Notification sounds (the notification key in [sounds] above and the app
 # sounds in [sounds.apps]). Do Not Disturb silences these and nothing else.
