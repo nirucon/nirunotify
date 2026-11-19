@@ -6,6 +6,7 @@
 //! content until it is established that the lock is gone.
 
 mod config;
+mod network;
 mod osd;
 mod render;
 mod sounds;
@@ -148,7 +149,9 @@ impl NotifyIface {
         }
         if !shared.dnd || (urgency == 2 && shared.critical_ignore_dnd) {
             let _ = shared.ui.send(UiCommand::Show(notification));
-            play_notification_sound(&shared.sound, app_name);
+            if !suppress_sound(&hints) {
+                play_notification_sound(&shared.sound, app_name);
+            }
         } else {
             // DND hides the popup, but the notification still needs a bounded
             // lifetime so the client receives NotificationClosed instead of
@@ -218,6 +221,19 @@ fn sound_worker(rx: Receiver<String>) {
         }
         last = Some(Instant::now());
     }
+}
+
+/// The freedesktop `suppress-sound` hint: the client plays its own sound (the
+/// NIRUBAR timer and reminders play `timer-done` and `reminder`), so the
+/// notification sound would be a second one. A boolean, as the spec says; an
+/// integer 1 from a loose client counts too.
+fn suppress_sound(hints: &HashMap<String, OwnedValue>) -> bool {
+    hints.get("suppress-sound").is_some_and(|v| {
+        bool::try_from(v)
+            .or_else(|_| i32::try_from(v).map(|n| n != 0))
+            .or_else(|_| u8::try_from(v).map(|n| n != 0))
+            .unwrap_or(false)
+    })
 }
 
 fn play_notification_sound(sound: &Sender<String>, app: &str) {
@@ -319,7 +335,12 @@ fn control_server(shared: Arc<Mutex<Shared>>) {
         let reply = match command {
             "sound" => match sounds::Request::parse(rest) {
                 Some(request) => {
-                    let _ = shared.lock().unwrap().feedback.send(request);
+                    let state = shared.lock().unwrap();
+                    if state.dnd && sounds::held_by_dnd(&request.event) {
+                        sounds::debug(&format!("{}: held by Do Not Disturb", request.event));
+                    } else {
+                        let _ = state.feedback.send(request);
+                    }
                     "ok\n".into()
                 }
                 None => "sound needs a known EVENT [LEVEL] [muted|unmuted]\n".into(),
@@ -1831,6 +1852,7 @@ fn daemon() -> Result<()> {
             (None, None)
         };
     uevents::start(feedback.clone(), test_reader);
+    network::start(feedback.clone());
     let (ui_tx, ui_rx) = mpsc::channel();
     let (event_tx, event_rx) = mpsc::channel();
     let shared = Arc::new(Mutex::new(Shared {
@@ -1878,6 +1900,7 @@ fn main() {
         "--check-config" => Config::load().map(|c| {
             println!("{}", c.describe());
             println!("{}", uevents::describe());
+            println!("{}", network::describe());
         }),
         "--dnd" => {
             let action = args.get(1).map(String::as_str).unwrap_or("status");
@@ -1932,6 +1955,34 @@ fn main() {
     if let Err(e) = result {
         eprintln!("nirunotify: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod hint_tests {
+    use super::*;
+    use zbus::zvariant::Value;
+
+    fn hints(value: Option<Value<'static>>) -> HashMap<String, OwnedValue> {
+        let mut map = HashMap::new();
+        map.insert("urgency".to_string(), OwnedValue::from(1u8));
+        if let Some(v) = value {
+            map.insert(
+                "suppress-sound".to_string(),
+                OwnedValue::try_from(v).unwrap(),
+            );
+        }
+        map
+    }
+
+    #[test]
+    fn the_suppress_sound_hint_silences_only_when_true() {
+        assert!(!suppress_sound(&hints(None)));
+        assert!(suppress_sound(&hints(Some(Value::from(true)))));
+        assert!(!suppress_sound(&hints(Some(Value::from(false)))));
+        assert!(suppress_sound(&hints(Some(Value::from(1i32)))));
+        assert!(!suppress_sound(&hints(Some(Value::from(0i32)))));
+        assert!(!suppress_sound(&hints(Some(Value::from("true")))));
     }
 }
 

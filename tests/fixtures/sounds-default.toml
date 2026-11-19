@@ -15,12 +15,19 @@ enabled = true
 auth-fail = true
 lock = false
 unlock = false
+# Typewriter keys while you type the password in NIRULOCK.
 lock-typing = true
+# The result of `nirux meet-check`: ready for a call, or something to fix.
+meet-ready = true
+meet-problem = true
 
 # Notification sounds (the notification key in [sounds] above and the app
-# sounds in [sounds.apps]). Do Not Disturb silences these and nothing else.
+# sounds in [sounds.apps]), the bar timer and calendar reminders. Do Not
+# Disturb silences notifications and reminders; a timer you set still sounds.
 [sounds.notifications]
 enabled = true
+timer-done = true
+reminder = true
 
 # Feedback for keys you press. Volume ticks play on the new level, so you
 # hear how loud it is; holding a key plays at most one tick per rate_limit_ms.
@@ -34,6 +41,12 @@ unmute = true
 brightness-up = false
 brightness-down = false
 screenshot = true
+# The microphone muted and live again (niructl audio mic-mute).
+mic-mute = true
+mic-unmute = true
+# A screen recording (NIRUCLIP) starts and stops.
+record-start = true
+record-stop = true
 rate_limit_ms = 80
 
 # Charger and battery. battery-low and battery-critical sound once per
@@ -60,6 +73,22 @@ audio = true
 displays = true
 bluetooth = false
 debounce_ms = 1500
+
+# NIRUDICTATE (an extra): start and stop of a dictation, the text being
+# inserted, and a dictation that failed. Silent without NIRUDICTATE.
+[sounds.dictation]
+enabled = true
+dictation-start = true
+dictation-stop = true
+dictation-done = false
+dictation-error = true
+
+# The connection is lost (no default route for a few seconds) and back.
+# Never at login or right after a resume, and a flapping link is one sound.
+[sounds.network]
+enabled = true
+network-down = true
+network-up = true
 
 # Per-app notification sounds. The key is the app name a notification is sent
 # with (see `nirunotify --history`), compared case-insensitively. The value is

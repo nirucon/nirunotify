@@ -1,4 +1,5 @@
-//! NIRUX system sounds: feedback, power, device and lock-screen events.
+//! NIRUX system sounds: feedback, power, device, network and lock-screen
+//! events, and the sounds other suite tools ask for on the control socket.
 //!
 //! The settings live in `~/.config/nirux/sounds.toml`, which belongs to NIRUX
 //! (`nirux sounds …`). This module reads it with the same rules as the
@@ -34,6 +35,7 @@ pub enum Category {
     Feedback,
     Power,
     Devices,
+    Network,
 }
 
 impl Category {
@@ -44,6 +46,7 @@ impl Category {
             Category::Feedback => "feedback",
             Category::Power => "power",
             Category::Devices => "devices",
+            Category::Network => "network",
         }
     }
 }
@@ -57,7 +60,11 @@ pub const EVENTS: &[(&str, Category, bool)] = &[
     ("lock", Category::System, false),
     ("unlock", Category::System, false),
     ("lock-typing", Category::System, true),
+    ("meet-ready", Category::System, true),
+    ("meet-problem", Category::System, true),
     ("notification", Category::Notifications, true),
+    ("timer-done", Category::Notifications, true),
+    ("reminder", Category::Notifications, true),
     ("volume-up", Category::Feedback, true),
     ("volume-down", Category::Feedback, true),
     ("volume-limit", Category::Feedback, true),
@@ -66,6 +73,10 @@ pub const EVENTS: &[(&str, Category, bool)] = &[
     ("brightness-up", Category::Feedback, false),
     ("brightness-down", Category::Feedback, false),
     ("screenshot", Category::Feedback, true),
+    ("mic-mute", Category::Feedback, true),
+    ("mic-unmute", Category::Feedback, true),
+    ("record-start", Category::Feedback, true),
+    ("record-stop", Category::Feedback, true),
     ("power-plug", Category::Power, true),
     ("power-unplug", Category::Power, true),
     ("battery-low", Category::Power, true),
@@ -73,6 +84,8 @@ pub const EVENTS: &[(&str, Category, bool)] = &[
     ("battery-full", Category::Power, false),
     ("device-connect", Category::Devices, true),
     ("device-disconnect", Category::Devices, true),
+    ("network-down", Category::Network, true),
+    ("network-up", Category::Network, true),
 ];
 
 pub fn lookup(event: &str) -> Option<(Category, bool)> {
@@ -104,7 +117,15 @@ pub fn is_key_repeat(event: &str) -> bool {
             | "unmute"
             | "brightness-up"
             | "brightness-down"
+            | "mic-mute"
+            | "mic-unmute"
     )
+}
+
+/// Events that Do Not Disturb holds back, like notification sounds. A timer
+/// the user set still sounds.
+pub fn held_by_dnd(event: &str) -> bool {
+    matches!(event, "notification" | "reminder")
 }
 
 /// The parsed sounds.toml: table name -> (lower-case key -> raw value).
@@ -878,6 +899,30 @@ mod tests {
             Decision::Off
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_new_events_have_their_categories_and_are_on_by_default() {
+        for (event, category) in [
+            ("mic-mute", Category::Feedback),
+            ("mic-unmute", Category::Feedback),
+            ("record-start", Category::Feedback),
+            ("record-stop", Category::Feedback),
+            ("timer-done", Category::Notifications),
+            ("reminder", Category::Notifications),
+            ("network-down", Category::Network),
+            ("network-up", Category::Network),
+            ("meet-ready", Category::System),
+            ("meet-problem", Category::System),
+        ] {
+            assert_eq!(lookup(event), Some((category, true)), "{event}");
+            assert!(Settings::parse(DEFAULTS).event_enabled(event), "{event}");
+            assert_eq!(Request::parse(event), Some(Request::new(event)));
+        }
+        let s = Settings::parse("[sounds.network]\nenabled = false\n");
+        assert!(!s.event_enabled("network-down") && s.event_enabled("record-start"));
+        assert!(is_key_repeat("mic-mute") && !is_key_repeat("record-start"));
+        assert!(held_by_dnd("reminder") && !held_by_dnd("timer-done"));
     }
 
     #[test]

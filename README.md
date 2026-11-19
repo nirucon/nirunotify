@@ -36,8 +36,9 @@ an existing one; NIRUWM falls back to Dunst when NIRUNOTIFY is not installed.
   or 100 % lights the bar briefly. For example `nirunotify --osd volume 45%`.
 - NIRUX system sounds played natively, without a shell: volume, mute,
   brightness, screenshot, charger, battery, devices (USB, audio, monitors,
-  optionally Bluetooth) and lock. Charger and device events come from kernel
-  uevents, with no polling.
+  optionally Bluetooth), network lost and back, and lock. Charger and device
+  events come from kernel uevents and network changes from rtnetlink, with no
+  polling.
 - One coalescing sound worker, so a notification burst cannot stack audio or
   leave zombie processes; bounded maps and a 100-command queue.
 
@@ -92,7 +93,9 @@ nirunotify --version
 `volume-up`, `volume-down`, `volume-limit`, `mute`, `unmute`, `brightness-up`,
 `brightness-down`, `screenshot`, `power-plug`, `power-unplug`, `battery-low`,
 `battery-critical`, `battery-full`, `device-connect`, `device-disconnect`,
-`auth-fail`, `lock`, `unlock`, `lock-typing` and the session events. `--osd ... --sound ...`
+`auth-fail`, `lock`, `unlock`, `lock-typing`, `mic-mute`, `mic-unmute`,
+`record-start`, `record-stop`, `timer-done`, `reminder`, `network-down`,
+`network-up`, `meet-ready`, `meet-problem` and the session events. `--osd ... --sound ...`
 shows the OSD and plays the sound in one call; `LEVEL` picks the volume tick
 for the new level, and `unmuted` saves a `wpctl` call when the caller already
 knows the sink state. Other programs can send the same request as one line,
@@ -107,7 +110,8 @@ same twice in a row). `lock-typing` is NIRULOCK's typewriter click for each key
 typed in the password field (category `system`, on by default); it is not
 held back by `rate_limit_ms`, only capped at one click per 30 ms, and starts
 with a short PipeWire buffer. A held key plays at most one tick per
-`rate_limit_ms`; Do Not Disturb silences notification sounds only; a muted sink
+`rate_limit_ms`; Do Not Disturb silences notification sounds and `reminder`
+only (a `timer-done` you set still sounds); a muted sink
 silences everything when `respect_mute` is on. See
 [NIRUX sounds](https://github.com/nirucon/nirux/blob/main/docs/SOUNDS.md).
 
@@ -118,9 +122,22 @@ are ignored), `usb` devices (not interfaces or root hubs), `sound` cards, `drm`
 connector status (monitors) and, when enabled, `bluetooth` links. A burst such
 as plugging in a dock is one sound, and the charger wins over its devices.
 
+`network-down` and `network-up` come from a second thread that sleeps on a
+`NETLINK_ROUTE` socket (link and IPv4/IPv6 route changes) and then reads
+`/proc/net/route` and `/proc/net/ipv6_route`: online means a default route
+through an interface whose `operstate` is `up` or `unknown`. The connection
+must be gone for 6 seconds before `network-down`, which never plays in the
+first 30 seconds of a session, within 20 seconds of a resume, or for a
+machine that started offline; `network-up` follows only a `network-down`,
+once the connection has been back for 3 seconds, and the next `network-down`
+waits at least 30 seconds after it, so a flapping link is one pair of sounds.
+`NIRUNOTIFY_NETWORK=off` turns the watcher off.
+
 The sound for a notification is played by `nirux sounds play notification
 --app APP`, one at a time with bursts coalesced, so the per-app sounds set with
-`nirux sounds app` and `notification_exclude_apps` apply. In NIRUX, `nirux manual
+`nirux sounds app` and `notification_exclude_apps` apply. A notification with
+the standard `suppress-sound` hint set to true plays no sound (the NIRUBAR
+timer and reminders send it and play `timer-done` or `reminder` themselves). In NIRUX, `nirux manual
 notifications` and `nirux manual event sounds` describe the whole setup.
 
 ## Configuration

@@ -431,7 +431,8 @@ impl Uevent {
 }
 
 /// Seconds the machine has spent suspended since boot.
-fn suspended_seconds() -> f64 {
+/// Seconds spent suspended since boot (CLOCK_BOOTTIME - CLOCK_MONOTONIC).
+pub(crate) fn suspended_seconds() -> f64 {
     let read = |clock| {
         let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
         unsafe { libc::clock_gettime(clock, &mut ts) };
