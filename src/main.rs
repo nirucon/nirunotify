@@ -252,7 +252,7 @@ impl NotifyIface {
         if !shared.dnd || (urgency == 2 && shared.critical_ignore_dnd) {
             let _ = shared.ui.send(UiCommand::Show(notification));
             if !suppress_sound(&hints) {
-                play_notification_sound(&shared.sound, app_name);
+                play_notification_sound(&shared.sound, &sound_app(app_name, body));
             }
         } else {
             // DND hides the popup, but the notification still needs a bounded
@@ -336,6 +336,32 @@ fn suppress_sound(hints: &HashMap<String, OwnedValue>) -> bool {
             .or_else(|_| u8::try_from(v).map(|n| n != 0))
             .unwrap_or(false)
     })
+}
+
+/// The app name for the notification sound: `APP@SITE` when the body starts
+/// with a bare site name on its own line, which is how Chromium browsers (and
+/// so NIRUWEBAPP windows) show where a web notification comes from. NIRUX
+/// then lets a site such as Teams have its own sound; an older NIRUX finds no
+/// entry for the combined name and plays the normal notification sound.
+fn sound_app(app: &str, body: &str) -> String {
+    let first = body.lines().next().unwrap_or("").trim();
+    let is_site = first.len() <= 100
+        && first.contains('.')
+        && !first.starts_with('.')
+        && !first.ends_with('.')
+        && !first.contains("..")
+        && first
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
+        && first
+            .rsplit('.')
+            .next()
+            .is_some_and(|tld| tld.len() >= 2 && tld.bytes().all(|b| b.is_ascii_lowercase()));
+    if is_site && body.trim() != first {
+        format!("{app}@{first}")
+    } else {
+        app.to_string()
+    }
 }
 
 fn play_notification_sound(sound: &Sender<String>, app: &str) {
@@ -2103,6 +2129,30 @@ fn main() {
     if let Err(e) = result {
         eprintln!("nirunotify: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod sound_app_tests {
+    use super::sound_app;
+
+    #[test]
+    fn a_web_notification_names_its_site() {
+        assert_eq!(
+            sound_app("Helium", "teams.cloud.microsoft\n\nSofie: Vi har ett forum"),
+            "Helium@teams.cloud.microsoft"
+        );
+        assert_eq!(
+            sound_app("Helium", "mail.google.com\nNew mail"),
+            "Helium@mail.google.com"
+        );
+        // Not a site on its own line, or nothing after it: the app alone.
+        assert_eq!(sound_app("Thunderbird", "From Anna\nHello"), "Thunderbird");
+        assert_eq!(sound_app("Signal", "See example.com later"), "Signal");
+        assert_eq!(sound_app("Helium", "teams.cloud.microsoft"), "Helium");
+        assert_eq!(sound_app("x", "Version 1.2\nnotes"), "x");
+        assert_eq!(sound_app("x", "a..b\nz"), "x");
+        assert_eq!(sound_app("x", ""), "x");
     }
 }
 

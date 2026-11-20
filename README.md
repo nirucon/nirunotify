@@ -141,7 +141,11 @@ waits at least 30 seconds after it, so a flapping link is one pair of sounds.
 
 The sound for a notification is played by `nirux sounds play notification
 --app APP`, one at a time with bursts coalesced, so the per-app sounds set with
-`nirux sounds app` and `notification_exclude_apps` apply. A notification with
+`nirux sounds app` and `notification_exclude_apps` apply. When the body
+starts with a bare site name on its own line (how Chromium browsers and
+NIRUWEBAPP windows mark a web notification), APP is sent as `APP@SITE`, so a
+site such as Teams can have its own sound; an older NIRUX finds no entry for
+that name and plays the normal notification sound. A notification with
 the standard `suppress-sound` hint set to true plays no sound (the NIRUBAR
 timer and reminders send it and play `timer-done` or `reminder` themselves). In NIRUX, `nirux manual
 notifications` and `nirux manual event sounds` describe the whole setup.
