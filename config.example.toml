@@ -18,6 +18,10 @@ max_timeout_ms = 60000
 # Urgent notifications use this timeout; they may also bypass DND if enabled.
 critical_timeout_ms = 30000
 critical_ignore_dnd = false
+# After a lock of at least this long, what came meanwhile is one
+# "While you were away" card (urgent ones still show on their own).
+away_summary = true
+away_after_minutes = 10
 # Which screen notifications and the volume/brightness OSD use, chosen again
 # for every one: empty or "focused" = the NIRUWM focused screen; "pointer" =
 # the screen under the pointer; "primary" = RandR primary; or an output name.

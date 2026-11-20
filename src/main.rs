@@ -50,6 +50,108 @@ struct Notification {
     actions: Vec<(String, String)>,
 }
 
+/// The id of the "While you were away" card; no client ever gets it.
+const AWAY_ID: u32 = u32::MAX;
+const AWAY_CARD_MS: u64 = 15_000;
+/// Body lines of the card: apps, then downloads (the popup shows 8 rows).
+const AWAY_LINES: usize = 6;
+
+/// One line per app, in the order they first came: how many, and the
+/// newest summary. Then new downloads.
+fn away_lines(gathered: &[Notification], downloads: usize) -> Vec<String> {
+    let mut apps: Vec<(String, usize, String)> = Vec::new();
+    for n in gathered {
+        let app = if n.app.trim().is_empty() {
+            "Notifications".to_string()
+        } else {
+            n.app.trim().to_string()
+        };
+        match apps.iter_mut().find(|(name, _, _)| *name == app) {
+            Some(entry) => {
+                entry.1 += 1;
+                entry.2 = n.summary.clone();
+            }
+            None => apps.push((app, 1, n.summary.clone())),
+        }
+    }
+    let room = AWAY_LINES - usize::from(downloads > 0);
+    let mut lines: Vec<String> = Vec::new();
+    let shown = if apps.len() > room {
+        room - 1
+    } else {
+        apps.len()
+    };
+    for (app, count, latest) in apps.iter().take(shown) {
+        let latest = truncate(latest.trim(), 48);
+        if latest.is_empty() {
+            lines.push(format!("{app}  {count}"));
+        } else {
+            lines.push(format!("{app}  {count} · {latest}"));
+        }
+    }
+    if apps.len() > shown {
+        let rest: usize = apps.iter().skip(shown).map(|(_, count, _)| count).sum();
+        lines.push(format!("{} more apps  {rest}", apps.len() - shown));
+    }
+    if downloads > 0 {
+        lines.push(format!(
+            "Downloads  {downloads} new {}",
+            if downloads == 1 { "file" } else { "files" }
+        ));
+    }
+    lines
+}
+
+/// "12 min", "1 h 5 min", "3 h".
+fn away_duration(away: Duration) -> String {
+    let minutes = away.as_secs() / 60;
+    match (minutes / 60, minutes % 60) {
+        (0, m) => format!("{m} min"),
+        (h, 0) => format!("{h} h"),
+        (h, m) => format!("{h} h {m} min"),
+    }
+}
+
+/// The download folder: XDG_DOWNLOAD_DIR from user-dirs.dirs, or ~/Downloads.
+fn download_dir() -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
+    let named = std::fs::read_to_string(config.join("user-dirs.dirs"))
+        .ok()
+        .and_then(|text| {
+            text.lines().find_map(|line| {
+                let value = line.trim().strip_prefix("XDG_DOWNLOAD_DIR=")?;
+                let value = value.trim().trim_matches('"');
+                let value = value.replace("$HOME", &home.to_string_lossy());
+                (!value.is_empty()).then(|| PathBuf::from(value))
+            })
+        });
+    Some(named.unwrap_or_else(|| home.join("Downloads")))
+}
+
+/// Finished files that landed in `dir` since `since` (not in subfolders,
+/// not hidden, not a browser's unfinished download).
+fn new_downloads(dir: &std::path::Path, since: std::time::SystemTime) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            !name.starts_with('.')
+                && ![".part", ".crdownload", ".tmp", ".download"]
+                    .iter()
+                    .any(|suffix| name.ends_with(suffix))
+        })
+        .filter_map(|entry| entry.metadata().ok())
+        .filter(|meta| meta.is_file())
+        .filter(|meta| meta.modified().is_ok_and(|time| time >= since))
+        .count()
+}
+
 #[derive(Clone)]
 enum UiCommand {
     Show(Notification),
@@ -789,6 +891,8 @@ struct Ui {
     /// Last level per OSD channel, so `Muted` still shows how loud it was.
     osd_levels: HashMap<String, u32>,
     locked: bool,
+    /// When the screen locked (for the "While you were away" card).
+    locked_since: Option<(Instant, std::time::SystemTime)>,
     pending: Vec<UiCommand>,
     lock_atom: Atom,
     last_lock_check: Instant,
@@ -844,6 +948,7 @@ impl Ui {
             osd: None,
             osd_levels: HashMap::new(),
             locked: false,
+            locked_since: None,
             pending: Vec::new(),
             lock_atom,
             last_lock_check: Instant::now() - Duration::from_secs(1),
@@ -1578,7 +1683,7 @@ impl Ui {
             popup.destroy(&self.c);
             self.layout()?;
         }
-        if notify {
+        if notify && id != AWAY_ID {
             let _ = self.events.send(UiEvent::Closed { id, reason });
         }
         Ok(())
@@ -1625,6 +1730,50 @@ impl Ui {
         }
     }
 
+    /// The screen was unlocked: show what waited. After a long lock, the
+    /// ordinary notifications become one card (urgent ones still show on
+    /// their own, and every client still gets its NotificationClosed).
+    fn release_pending(&mut self) -> Result<()> {
+        let pending = std::mem::take(&mut self.pending);
+        let since = self.locked_since.take();
+        let long = self.cfg.away_summary
+            && since.is_some_and(|(at, _)| {
+                at.elapsed() >= Duration::from_secs(self.cfg.away_after_minutes * 60)
+            });
+        let Some((at, wall)) = since.filter(|_| long) else {
+            for command in pending {
+                self.handle_command(command)?;
+            }
+            return Ok(());
+        };
+        let mut gathered = Vec::new();
+        for command in pending {
+            match command {
+                UiCommand::Show(n) if n.urgency < 2 => {
+                    gathered.push(n.clone());
+                    self.silence(n);
+                }
+                // Volume and brightness from before the lock are stale.
+                UiCommand::Osd { .. } => {}
+                other => self.handle_command(other)?,
+            }
+        }
+        let downloads = download_dir().map_or(0, |dir| new_downloads(&dir, wall));
+        let lines = away_lines(&gathered, downloads);
+        if lines.is_empty() {
+            return Ok(());
+        }
+        self.show(Notification {
+            id: AWAY_ID,
+            app: "NIRUX".into(),
+            summary: format!("While you were away · {}", away_duration(at.elapsed())),
+            body: lines.join("\n"),
+            urgency: 1,
+            timeout_ms: AWAY_CARD_MS,
+            actions: Vec::new(),
+        })
+    }
+
     fn hide_for_lock(&mut self) -> Result<()> {
         for popup in self.popups.drain(..) {
             let id = popup.id;
@@ -1645,6 +1794,7 @@ impl Ui {
         // before the periodic lock check runs. Never show it over the lock.
         if !self.locked && self.lock_established() {
             self.locked = true;
+            self.locked_since = Some((Instant::now(), std::time::SystemTime::now()));
             self.last_lock_check = Instant::now();
             self.hide_for_lock()?;
         }
@@ -1747,12 +1897,10 @@ impl Ui {
                 if locked != self.locked {
                     self.locked = locked;
                     if locked {
+                        self.locked_since = Some((Instant::now(), std::time::SystemTime::now()));
                         self.hide_for_lock()?;
                     } else {
-                        let pending = std::mem::take(&mut self.pending);
-                        for command in pending {
-                            self.handle_command(command)?;
-                        }
+                        self.release_pending()?;
                     }
                 }
             }
@@ -1973,6 +2121,71 @@ mod hint_tests {
             );
         }
         map
+    }
+
+    fn note(app: &str, summary: &str) -> Notification {
+        Notification {
+            id: 1,
+            app: app.into(),
+            summary: summary.into(),
+            body: String::new(),
+            urgency: 1,
+            timeout_ms: u64::MAX,
+            actions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_away_card_groups_by_app_with_the_newest_summary() {
+        let gathered = vec![
+            note("Discord", "Anna: hej"),
+            note("Thunderbird", "Re: möte"),
+            note("Discord", "Bo: kommer du?"),
+        ];
+        assert_eq!(
+            away_lines(&gathered, 2),
+            vec![
+                "Discord  2 · Bo: kommer du?".to_string(),
+                "Thunderbird  1 · Re: möte".to_string(),
+                "Downloads  2 new files".to_string(),
+            ]
+        );
+        assert!(away_lines(&[], 0).is_empty());
+        assert_eq!(
+            away_lines(&[], 1),
+            vec!["Downloads  1 new file".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_away_card_folds_many_apps_into_one_line() {
+        let gathered: Vec<Notification> = (0..9).map(|i| note(&format!("App{i}"), "x")).collect();
+        let lines = away_lines(&gathered, 1);
+        assert_eq!(lines.len(), AWAY_LINES);
+        assert_eq!(lines[4], "5 more apps  5");
+        assert_eq!(lines[5], "Downloads  1 new file");
+    }
+
+    #[test]
+    fn away_durations_read_naturally() {
+        assert_eq!(away_duration(Duration::from_secs(12 * 60 + 30)), "12 min");
+        assert_eq!(away_duration(Duration::from_secs(3600)), "1 h");
+        assert_eq!(away_duration(Duration::from_secs(3900)), "1 h 5 min");
+    }
+
+    #[test]
+    fn only_finished_visible_files_count_as_downloads() {
+        let dir = std::env::temp_dir().join(format!("nirunotify-dl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let before = std::time::SystemTime::now() - Duration::from_secs(5);
+        for name in ["a.pdf", "b.iso.part", ".hidden", "c.crdownload", "d.zip"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        assert_eq!(new_downloads(&dir, before), 2);
+        let later = std::time::SystemTime::now() + Duration::from_secs(60);
+        assert_eq!(new_downloads(&dir, later), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

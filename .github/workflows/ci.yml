@@ -18,7 +18,8 @@ jobs:
           sh tests/ui-smoke.sh target/release/nirunotify
           sh tests/multihead-smoke.sh target/release/nirunotify
           sh tests/sounds-smoke.sh target/release/nirunotify
+          sh tests/away-smoke.sh target/release/nirunotify
       - name: Shellcheck
         run: |
           docker run --rm -v "$PWD":/src:ro koalaman/shellcheck:stable \
-            -S warning -s sh /src/install.sh /src/tests/ui-smoke.sh /src/tests/multihead-smoke.sh /src/tests/sounds-smoke.sh
+            -S warning -s sh /src/install.sh /src/tests/ui-smoke.sh /src/tests/multihead-smoke.sh /src/tests/sounds-smoke.sh /src/tests/away-smoke.sh

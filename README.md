@@ -30,6 +30,10 @@ an existing one; NIRUWM falls back to Dunst when NIRUNOTIFY is not installed.
 - Do Not Disturb, critical-timeout policy and memory-only history (100
   entries), controlled over a Unix-socket CLI.
 - Suppressed while NIRULOCK's `_NIRU_LOCK_READY` names a live lock window.
+- "While you were away": after a lock of 10 minutes or more, what came
+  meanwhile is one card per unlock (how many per app and the newest line,
+  new files in Downloads) instead of a pile of popups. Urgent notifications
+  still show on their own, and every client still gets its close signal.
 - Hardware OSD for volume and brightness: label, icon, the value and a level
   bar in the theme accent that glides to the new level. A held key reuses the
   same box, `Muted` keeps the last level greyed out and a press against 0 %
@@ -156,6 +160,8 @@ from the shared NIRUWM appearance unless set here.
 | `max_timeout_ms` | `60000` | Upper bound for any timeout, including a persistent 0 |
 | `critical_timeout_ms` | `30000` | Timeout for urgent notifications |
 | `critical_ignore_dnd` | `false` | Let urgent notifications through DND |
+| `away_summary` | `true` | After a long lock, show one "While you were away" card instead of every notification that came |
+| `away_after_minutes` | `10` | How long the screen must have been locked for that card (1 to 240) |
 | `monitor` | `""` | Empty or `focused` = NIRUWM focused screen, `pointer`, `primary`, or an output name |
 | `position` | `top-right` | `top-right`, `top-left`, `bottom-right` or `bottom-left` |
 | `font_size`, `font_path` | `14.0`, unset | Font override |
@@ -182,7 +188,8 @@ watcher reads now.
   over its socket; start `nirunotify` first.
 - **A sound does not play.** `NIRUNOTIFY_DEBUG_SOUNDS=1 nirunotify` explains
   each decision on stderr; `nirux sounds status` shows what is switched on.
-- **No popups while the screen is locked.** That is intentional.
+- **No popups while the screen is locked.** That is intentional: they wait
+  for the unlock, and after a long lock they come as one card.
 
 ## Uninstall
 

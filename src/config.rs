@@ -21,6 +21,10 @@ pub struct Config {
     pub max_timeout_ms: u64,
     pub critical_timeout_ms: u64,
     pub critical_ignore_dnd: bool,
+    /// After a lock of at least `away_after_minutes`, what arrived meanwhile
+    /// is shown as one "While you were away" card instead of a pile.
+    pub away_summary: bool,
+    pub away_after_minutes: u64,
     /// Empty or "focused" follows the NIRUWM focused screen; "pointer" uses
     /// the screen under the pointer; "primary" uses RandR's primary output;
     /// anything else is matched against an output name.
@@ -105,6 +109,8 @@ impl Default for Config {
             max_timeout_ms: 60_000,
             critical_timeout_ms: 30_000,
             critical_ignore_dnd: false,
+            away_summary: true,
+            away_after_minutes: 10,
             monitor: String::new(),
             font_path: None,
             font_size: 14.0,
@@ -369,6 +375,12 @@ impl Config {
         if let Some(b) = v.get("critical_ignore_dnd").and_then(|x| x.as_bool()) {
             cfg.critical_ignore_dnd = b;
         }
+        if let Some(b) = v.get("away_summary").and_then(|x| x.as_bool()) {
+            cfg.away_summary = b;
+        }
+        if let Some(n) = v.get("away_after_minutes").and_then(|x| x.as_integer()) {
+            cfg.away_after_minutes = n.clamp(1, 240) as u64;
+        }
         if let Some(s) = v.get("monitor").and_then(|x| x.as_str()) {
             cfg.monitor = s.trim().to_string();
         }
@@ -418,7 +430,7 @@ impl Config {
 
     pub fn describe(&self) -> String {
         format!(
-            "config: {}\ntheme: {}\nwidth: {}\nmargin: {}\nmax visible: {}\ntimeouts: {}..{} ms (critical {})\ncritical ignores DND: {}\nmonitor: {}\nfont: {} {}\nposition: {:?}\npalette: background={:06x} surface={:06x} foreground={:06x} muted={:06x} border={:06x} accent={:06x} warning={:06x} error={:06x}",
+            "config: {}\ntheme: {}\nwidth: {}\nmargin: {}\nmax visible: {}\ntimeouts: {}..{} ms (critical {})\ncritical ignores DND: {}\naway summary: {} (after {} min)\nmonitor: {}\nfont: {} {}\nposition: {:?}\npalette: background={:06x} surface={:06x} foreground={:06x} muted={:06x} border={:06x} accent={:06x} warning={:06x} error={:06x}",
             path().display(),
             self.theme,
             self.width,
@@ -428,6 +440,8 @@ impl Config {
             self.max_timeout_ms,
             self.critical_timeout_ms,
             self.critical_ignore_dnd,
+            if self.away_summary { "on" } else { "off" },
+            self.away_after_minutes,
             if self.monitor.is_empty() { "focused" } else { &self.monitor },
             self.font_size,
             self.font_path.as_deref().unwrap_or("auto"),
