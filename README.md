@@ -122,7 +122,9 @@ silences everything when `respect_mute` is on. See
 Charger, battery and device events come from one thread that sleeps on a
 kernel uevent socket: the charger (`power_supply` Mains/USB `online`), the
 machine's batteries (`capacity`, `status`; peripherals with `scope = Device`
-are ignored), `usb` devices (not interfaces or root hubs), `sound` cards, `drm`
+are ignored), `usb` devices (not interfaces, root hubs or devices on ports the
+firmware marks as built in, such as a fingerprint reader that drops off and
+comes back when a finger comes near), `sound` cards, `drm`
 connector status (monitors) and, when enabled, `bluetooth` links. A burst such
 as plugging in a dock is one sound, and the charger wins over its devices.
 

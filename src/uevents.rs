@@ -80,6 +80,48 @@ fn read(path: &Path) -> Option<String> {
 }
 
 impl Sysfs {
+    /// A USB device on a port the firmware calls built in (`hardwired` or
+    /// `not used`, which is what makes the kernel say `removable=fixed`):
+    /// a fingerprint reader, camera or Bluetooth chip. Such devices drop off
+    /// and come back on their own (a reader waking from autosuspend when a
+    /// finger comes near), so they never sound. The port's own directory is
+    /// read, as it is still there after the device has gone.
+    pub fn usb_builtin(&self, devpath: &str) -> bool {
+        let devpath = devpath.trim_start_matches('/');
+        let Some((parent_dir, leaf)) = devpath.rsplit_once('/') else {
+            return false;
+        };
+        let (hub, port) = match leaf.rsplit_once('.') {
+            Some((hub, port)) => (hub.to_string(), port),
+            None => match leaf.split_once('-') {
+                Some((bus, port)) => (format!("{bus}-0"), port),
+                None => return false,
+            },
+        };
+        if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        let port_name = match hub.strip_suffix("-0") {
+            Some(bus) => format!("usb{bus}-port{port}"),
+            None => format!("{hub}-port{port}"),
+        };
+        let dir = self.root.join(parent_dir);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return false;
+        };
+        let iface_prefix = format!("{hub}:");
+        entries.flatten().any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&iface_prefix)
+                && matches!(
+                    read(&entry.path().join(&port_name).join("connect_type")).as_deref(),
+                    Some("hardwired") | Some("not used")
+                )
+        })
+    }
+
     pub fn from_env() -> Self {
         Self {
             root: std::env::var_os("NIRUNOTIFY_SYSFS")
@@ -508,7 +550,15 @@ impl Watcher {
             }
             _ => {
                 if let Some(connect) = event.device(&s) {
-                    if !resuming {
+                    let builtin =
+                        event.subsystem == "usb" && self.sysfs.usb_builtin(&event.devpath);
+                    if builtin {
+                        crate::sounds::debug(&format!(
+                            "built-in usb device {} ignored",
+                            event.devpath
+                        ));
+                    }
+                    if !resuming && !builtin {
                         self.burst
                             .push(Change::Device { connect }, now, s.debounce());
                     }
@@ -995,6 +1045,44 @@ mod tests {
         // A repeated hotplug with nothing new is silent.
         assert!(w.handle(&drm, ms(9000)).is_empty());
         assert_eq!(w.flush(ms(9300)), None);
+        // A fingerprint reader on a built-in port drops off and comes back
+        // without a sound; a stick on an outside port still sounds.
+        let usb = "devices/pci0000:00/0000:00:14.0/usb3";
+        put(
+            &root,
+            &format!("{usb}/3-0:1.0/usb3-port4/connect_type"),
+            "not used",
+        );
+        put(
+            &root,
+            &format!("{usb}/3-0:1.0/usb3-port1/connect_type"),
+            "hotplug",
+        );
+        put(
+            &root,
+            &format!("{usb}/3-1/3-1:1.0/3-1-port2/connect_type"),
+            "hardwired",
+        );
+        let ev = |action: &str, dev: &str| {
+            Uevent::parse(&message_from_line(&format!(
+                "ACTION={action} SUBSYSTEM=usb DEVTYPE=usb_device DEVPATH=/{usb}/{dev}"
+            )))
+            .unwrap()
+        };
+        assert!(w.sysfs.usb_builtin(&format!("/{usb}/3-4")));
+        assert!(!w.sysfs.usb_builtin(&format!("/{usb}/3-1")));
+        assert!(w.sysfs.usb_builtin(&format!("/{usb}/3-1/3-1.2")));
+        assert!(
+            !w.sysfs.usb_builtin(&format!("/{usb}/3-9")),
+            "an unknown port sounds"
+        );
+        assert!(!w.sysfs.usb_builtin("/d/hci0"));
+        for action in ["remove", "add", "remove", "add"] {
+            w.handle(&ev(action, "3-4"), ms(20000));
+        }
+        assert_eq!(w.flush(ms(20300)), None);
+        w.handle(&ev("add", "3-1"), ms(30000));
+        assert_eq!(w.flush(ms(30300)), Some("device-connect"));
         let _ = std::fs::remove_dir_all(root);
     }
 }
